@@ -19,6 +19,10 @@
 
 VN Stream 是一个自托管的视觉小说游戏库，支持 Ren'Py、ONScripter 和 Kirikiri。导入游戏后，VN Stream 在你的主机上运行游戏，并将画面和声音串流到浏览器。
 
+![《Eternum》游戏详情页，显示推荐的 Ren'Py 运行器及素材、存档入口](docs/images/game-details.png)
+
+![浏览器中串流的《Eternum》主菜单，左上角是 Selkies 统计面板，底部是 VN Stream 快捷栏](docs/images/browser-stream.png)
+
 ## 支持的游戏引擎
 
 | 引擎       | 内置版本与源码                                                                                                                                                                                                                      | 默认选项与兼容性                                                                                                                           |

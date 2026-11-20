@@ -19,6 +19,10 @@
 
 VN Stream is a self-hosted visual novel library for Ren'Py, ONScripter, and Kirikiri. After you import a game, VN Stream runs it on your host and streams its video and audio to your browser.
 
+![Eternum game details showing the recommended Ren'Py runtime and the Media and Saves tabs](docs/images/game-details.png)
+
+![Eternum's main menu streaming in the browser, with Selkies statistics and the VN Stream toolbar](docs/images/browser-stream.png)
+
 ## Supported game engines
 
 | Engine     | Bundled runtimes and sources                                                                                                                                                                                                            | Default and compatibility                                                                                                                                                                      |

@@ -9,6 +9,14 @@ from tempfile import TemporaryDirectory
 
 ROOT = Path(__file__).resolve().parents[1]
 PUBLIC_MARKDOWN = {"README.md", "README_ZH.md", "AGENTS.md"}
+PUBLIC_DOC_FILES = {
+    "docs/backend-architecture.md",
+    "docs/engine-integration.md",
+    "docs/frontend-and-api.md",
+    "docs/development-and-release.md",
+    "docs/images/game-details.png",
+    "docs/images/browser-stream.png",
+}
 NOTICE_PATHS = {"tests/unit/archive_fixtures/README.md": "tests/unit/archive_fixtures/NOTICE.txt"}
 SOURCE_DIRS = {".github", "config", "containers", "scripts", "src", "tests", "tools", "web"}
 PUBLIC_ROOT = PUBLIC_MARKDOWN | {
@@ -29,6 +37,8 @@ def public_path(name: str) -> str | None:
         raise ValueError(f"Invalid tracked path: {name}")
     if name in NOTICE_PATHS:
         return NOTICE_PATHS[name]
+    if name in PUBLIC_DOC_FILES:
+        return name
     if len(path.parts) == 1:
         return name if name in PUBLIC_ROOT else None
     if path.parts[:2] in {("config", "local"), ("config", "secrets")} or any(
@@ -76,7 +86,11 @@ def export(ref: str, destination: Path) -> None:
                     target.chmod(0o755 if entry.mode & 0o111 else 0o644)
             if process.wait():
                 raise ValueError("Unable to read the public export commit")
-        required = PUBLIC_MARKDOWN | {"LICENSE", "compose.yaml", "web/api/openapi-v2.json"}
+        required = PUBLIC_MARKDOWN | PUBLIC_DOC_FILES | {
+            "LICENSE",
+            "compose.yaml",
+            "web/api/openapi-v2.json",
+        }
         missing = sorted(name for name in required if not (tree / name).is_file())
         if missing:
             raise ValueError(f"Commit lacks required public files: {', '.join(missing)}")
