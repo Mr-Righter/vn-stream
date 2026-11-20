@@ -3,10 +3,10 @@
   <p>Stream visual novels in your browser, wherever you are</p>
   <p><a href="README.md">English</a> · <a href="README_ZH.md">简体中文</a></p>
   <p>
-    <a href="https://github.com/Mr-Righter/vn-stream/releases/tag/v1.0.0"><img src="https://img.shields.io/badge/Release-v1.0.0-blue?style=flat-square" alt="Release v1.0.0" /></a>
-    <a href="https://github.com/Mr-Righter/vn-stream/pkgs/container/vn-stream"><img src="https://img.shields.io/badge/GHCR-vn--stream-181717?style=flat-square&amp;logo=github" alt="GHCR" /></a>
-    <a href="#quick-start"><img src="https://img.shields.io/badge/Linux-x86--64-555?style=flat-square&amp;logo=linux&amp;logoColor=white" alt="Linux x86-64" /></a>
-    <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="MIT" /></a>
+    <a href="https://github.com/Mr-Righter/vn-stream/releases/tag/v1.0.0"><img src="https://img.shields.io/badge/Release-v1.0.0-blue?style=flat" alt="Release v1.0.0" /></a>
+    <a href="https://github.com/Mr-Righter/vn-stream/pkgs/container/vn-stream"><img src="https://img.shields.io/badge/GHCR-vn--stream-181717?style=flat&amp;logo=github" alt="GHCR" /></a>
+    <a href="#quick-start"><img src="https://img.shields.io/badge/Linux-x86--64-555?style=flat&amp;logo=linux&amp;logoColor=white" alt="Linux x86-64" /></a>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=flat" alt="MIT" /></a>
   </p>
   <p>
     <a href="#supported-game-engines">Supported game engines</a> ·
@@ -100,14 +100,12 @@ docker compose up -d
 
 On the Docker host, open <http://localhost:8443/library/> and sign in. Use **Import** to add games. You can also put extracted projects under `renpy/`, `onscripter/`, or `kirikiri/` in `games/`, then refresh the library.
 
-<details>
-<summary>Full-screen play on iOS</summary>
-
-1. Open the game library's HTTPS address in Safari on your iPhone or iPad.
-2. Tap **Share** → **Add to Home Screen**. If you see **Open as Web App**, turn it on, then tap **Add**. [Apple guide](https://support.apple.com/guide/iphone/open-as-web-app-iphea86e5236/27/ios/27)
-3. Open **VN Stream** from your Home Screen and start a game. The web app hides Safari's address bar and toolbar.
-
-</details>
+> [!NOTE]
+> **Full-screen play on iOS**
+>
+> 1. Open the game library's HTTPS address in Safari on your iPhone or iPad.
+> 2. Tap **Share** → **Add to Home Screen**. If you see **Open as Web App**, turn it on, then tap **Add**. [Apple guide](https://support.apple.com/guide/iphone/open-as-web-app-iphea86e5236/27/ios/27)
+> 3. Open **VN Stream** from your Home Screen and start a game. The web app hides Safari's address bar and toolbar.
 
 ## Running games and tuning streams
 
@@ -119,7 +117,7 @@ On the Docker host, open <http://localhost:8443/library/> and sign in. Use **Imp
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Frame rate          | Start at 30 FPS. If playback still stutters, try 24 or 20 FPS to reduce the number of frames encoded, transmitted, and decoded each second.                                                                                                                                                      |
 | Video CRF           | In CRF mode, try raising 25 gradually to 28–32. Higher values usually use less bandwidth and reduce image quality. In CBR mode, lower the video bitrate.                                                                                                                                         |
-| Encoder and decoder | If you see a black screen or dropped frames, try H.264 if your browser supports it. The encoder sets the video format sent by the server. The browser chooses how to decode it based on your device. Check the **Decoder** entry in the stats panel to see whether it uses hardware or software. |
+| Video codec         | If you see a black screen or dropped frames, try H.264 if your browser supports it. The encoder sets the video format sent by the server. The browser chooses how to decode it based on your device. Check the **Decoder** entry in the stats panel to see whether it uses hardware or software. |
 
 [Selkies](https://github.com/selkies-project/selkies) · [Web client settings](https://docs.linuxserver.io/selkies/user-guide/web-client/) · [Streaming troubleshooting](https://docs.linuxserver.io/selkies/user-guide/troubleshooting/)
 

@@ -3,10 +3,10 @@
   <p>在浏览器中随时随地串流游玩视觉小说</p>
   <p><a href="README.md">English</a> · <a href="README_ZH.md">简体中文</a></p>
   <p>
-    <a href="https://github.com/Mr-Righter/vn-stream/releases/tag/v1.0.0"><img src="https://img.shields.io/badge/Release-v1.0.0-blue?style=flat-square" alt="Release v1.0.0" /></a>
-    <a href="https://github.com/Mr-Righter/vn-stream/pkgs/container/vn-stream"><img src="https://img.shields.io/badge/GHCR-vn--stream-181717?style=flat-square&amp;logo=github" alt="GHCR" /></a>
-    <a href="#快速开始"><img src="https://img.shields.io/badge/Linux-x86--64-555?style=flat-square&amp;logo=linux&amp;logoColor=white" alt="Linux x86-64" /></a>
-    <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="MIT" /></a>
+    <a href="https://github.com/Mr-Righter/vn-stream/releases/tag/v1.0.0"><img src="https://img.shields.io/badge/Release-v1.0.0-blue?style=flat" alt="Release v1.0.0" /></a>
+    <a href="https://github.com/Mr-Righter/vn-stream/pkgs/container/vn-stream"><img src="https://img.shields.io/badge/GHCR-vn--stream-181717?style=flat&amp;logo=github" alt="GHCR" /></a>
+    <a href="#快速开始"><img src="https://img.shields.io/badge/Linux-x86--64-555?style=flat&amp;logo=linux&amp;logoColor=white" alt="Linux x86-64" /></a>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=flat" alt="MIT" /></a>
   </p>
   <p>
     <a href="#支持的游戏引擎">支持的游戏引擎</a> ·
@@ -100,14 +100,12 @@ docker compose up -d
 
 在运行 Docker 的设备上打开 <http://localhost:8443/library/> 并登录。通过**导入**添加游戏，也可将解压后的游戏按引擎放到 `games/` 下的 `renpy/`、`onscripter/` 或 `kirikiri/` 后刷新游戏库。
 
-<details>
-<summary>在 iOS 上全屏游玩</summary>
-
-1. 在 iPhone 或 iPad 上用 Safari 打开设备可访问的 HTTPS 游戏库地址。
-2. 轻点「共享」→「添加到主屏幕」。若看到「作为网页 App 打开」，将其开启，再轻点「添加」。[Apple 操作指南](https://support.apple.com/zh-cn/guide/iphone/iphea86e5236/27/ios/27)
-3. 从主屏幕打开 **VN Stream** 图标并进入游戏。网页 App 会隐藏 Safari 的地址栏和工具栏。
-
-</details>
+> [!NOTE]
+> **在 iOS 上全屏游玩**
+>
+> 1. 在 iPhone 或 iPad 上用 Safari 打开设备可访问的 HTTPS 游戏库地址。
+> 2. 轻点「共享」→「添加到主屏幕」。若看到「作为网页 App 打开」，将其开启，再轻点「添加」。[Apple 操作指南](https://support.apple.com/zh-cn/guide/iphone/iphea86e5236/27/ios/27)
+> 3. 从主屏幕打开 **VN Stream** 图标并进入游戏。网页 App 会隐藏 Safari 的地址栏和工具栏。
 
 ## 游戏运行与串流调优
 
@@ -119,7 +117,7 @@ docker compose up -d
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | 帧率           | 先设为 30 FPS，仍卡顿时再降到 24 或 20 FPS，减少每秒需要编码、传输和解码的画面。                                                                       |
 | 视频 CRF       | 在 CRF 模式下，可以把 25 逐步调到 28–32。数值越高，通常越省带宽，画质也会降低。使用 CBR 时可降低视频码率。                                             |
-| 编码器与解码器 | 黑屏或掉帧时，先尝试浏览器支持的 H.264。编码器决定服务端发送的视频格式，浏览器根据设备能力选择解码方式。可在统计中查看「解码器」显示的是硬件还是软件。 |
+| 视频编码格式   | 黑屏或掉帧时，先尝试浏览器支持的 H.264。编码器决定服务端发送的视频格式，浏览器根据设备能力选择解码方式。可在统计中查看「解码器」显示的是硬件还是软件。 |
 
 [Selkies](https://github.com/selkies-project/selkies) · [网页客户端设置](https://docs.linuxserver.io/selkies/user-guide/web-client/) · [串流故障排查](https://docs.linuxserver.io/selkies/user-guide/troubleshooting/)
 
