@@ -11,47 +11,42 @@ from vn_stream.engines.registry import ADAPTERS
 from vn_stream.runtimes.catalog import available_runtimes
 
 
-def krkr_source(root):
-    binary = root / "out/vn-linux/bin/krkr2/krkr2"
-    binary.parent.mkdir(parents=True)
-    binary.write_bytes(b"#!/bin/sh\nexit 0\n")
-    binary.chmod(0o755)
-    (root / "LICENSE").write_text("Test-only license")
-    resources = binary.parent / "Resources"
-    (resources / "locale").mkdir(parents=True)
-    (resources / "locale/en_us.xml").write_text("<locale/>")
-    return resources
-
-
-def test_krkr_publication_keeps_resources_and_checks_their_identity(tmp_path):
-    module = runpy.run_path(
-        str(Path(__file__).resolve().parents[2] / "scripts/build-native-runtime.py")
+def installed_krkr2(root):
+    resources = {
+        "Resources/locale/en_us.xml": "<locale/>",
+        "Resources/vn-stream-alsoft.conf": "[pulse]\nmmap=false\n",
+    }
+    for name, content in resources.items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+    runner = root / "runner"
+    runner.write_text("#!/bin/sh\nexit 0\n")
+    runner.chmod(0o755)
+    record = dict(
+        schema=1,
+        id="krkr:krkr2:test",
+        engine_id="krkr",
+        flavor="krkr2",
+        version="test-build",
+        executable="runner",
+        validation="validated",
+        binary_sha256=hashlib.sha256(runner.read_bytes()).hexdigest(),
+        resource_files={
+            name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in resources
+        },
     )
-    source, output = tmp_path / "source", tmp_path / "installed"
-    resources = krkr_source(source)
-    installed = module["publish"](source, output, "krkr2")
+    (root / "runtime.json").write_text(json.dumps(record))
+    return dict(record, path=str(root))
+
+
+def test_installed_krkr2_rejects_modified_resources(tmp_path):
+    installed = tmp_path / "kirikiri/krkr2"
+    installed_krkr2(installed)
+    assert len(available_runtimes(tmp_path, ADAPTERS)) == 1
     locale = installed / "Resources/locale/en_us.xml"
-    assert locale.read_bytes() == (resources / "locale/en_us.xml").read_bytes()
-    record = json.loads((installed / "runtime.json").read_text())
-    assert (
-        record["resource_files"]["Resources/locale/en_us.xml"]
-        == hashlib.sha256(locale.read_bytes()).hexdigest()
-    )
-    assert len(available_runtimes(output, ADAPTERS)) == 1
     locale.write_text("modified")
-    assert available_runtimes(output, ADAPTERS) == []
-
-
-def test_krkr_missing_default_locale_cannot_publish(tmp_path):
-    module = runpy.run_path(
-        str(Path(__file__).resolve().parents[2] / "scripts/build-native-runtime.py")
-    )
-    source = tmp_path / "source"
-    resources = krkr_source(source)
-    (resources / "locale/en_us.xml").unlink()
-    with pytest.raises(ValueError, match="locale"):
-        module["publish"](source, tmp_path / "installed", "krkr2")
-    assert not list((tmp_path / "installed").glob("krkr-*"))
+    assert available_runtimes(tmp_path, ADAPTERS) == []
 
 
 def test_yuri_publication_uses_clean_upstream_identity(tmp_path):
@@ -74,14 +69,9 @@ def test_krkr_cannot_omit_required_resources_at_discovery_or_launch(tmp_path):
     from vn_stream.engines.registry import inspect_project, prepare_launch
     from vn_stream.runtimes.catalog import verify_resources
 
-    module = runpy.run_path(
-        str(Path(__file__).resolve().parents[2] / "scripts/build-native-runtime.py")
-    )
-    source, output = tmp_path / "source", tmp_path / "installed"
-    krkr_source(source)
-    installed = module["publish"](source, output, "krkr2")
-    record = json.loads((installed / "runtime.json").read_text())
-    record.update(validation="validated", path=str(installed))
+    output = tmp_path / "runtimes"
+    installed = output / "kirikiri/krkr2"
+    record = installed_krkr2(installed)
     project = tmp_path / "project"
     project.mkdir()
     (project / "startup.tjs").write_text("System.exit();")
@@ -94,8 +84,7 @@ def test_krkr_cannot_omit_required_resources_at_discovery_or_launch(tmp_path):
     assert available_runtimes(output, ADAPTERS) == []
 
 
-@pytest.mark.parametrize("ignored", [False, True])
-def test_reused_native_checkout_rejects_untracked_build_inputs(tmp_path, ignored):
+def test_reused_native_checkout_rejects_untracked_build_inputs(tmp_path):
     import subprocess
 
     module = runpy.run_path(
@@ -124,24 +113,16 @@ def test_reused_native_checkout_rejects_untracked_build_inputs(tmp_path, ignored
     commit = subprocess.check_output(
         ["git", "-C", str(source), "rev-parse", "HEAD"], text=True
     ).strip()
-    if ignored:
-        (source / ".git/info/exclude").write_text("assets/extra.xml\n")
     (source / "assets/extra.xml").write_text("unexpected")
     with pytest.raises(ValueError, match="untracked"):
-        module["checkout"](source, "unused", commit, input_roots=("assets",))
+        module["checkout"](source, "unused", commit)
 
 
 def test_krkr_launch_uses_hashed_audio_profile_without_changing_project(tmp_path):
     from vn_stream.engines.registry import inspect_project, prepare_launch
 
-    module = runpy.run_path(
-        str(Path(__file__).resolve().parents[2] / "scripts/build-native-runtime.py")
-    )
-    source, output = tmp_path / "source", tmp_path / "installed"
-    krkr_source(source)
-    installed = module["publish"](source, output, "krkr2")
-    record = json.loads((installed / "runtime.json").read_text())
-    record.update(validation="validated", path=str(installed))
+    installed = tmp_path / "runtimes/kirikiri/krkr2"
+    record = installed_krkr2(installed)
     project = tmp_path / "project"
     project.mkdir()
     (project / "startup.tjs").write_text("System.exit();")
@@ -285,7 +266,7 @@ def test_zero_publication_keeps_manual_validation_with_a_distinct_identity(tmp_p
     assert record["validation"] == "experimental"
     assert "zero" in record["display_name"]
     assert record.get("default") is not True
-    assert {key for key, value in module["SPECS"].items() if value["engine_id"] == "ons"} == {
+    assert set(module["SPECS"]) == {
         "yuri",
         "jh",
         "zero",

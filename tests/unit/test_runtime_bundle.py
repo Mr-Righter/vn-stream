@@ -1,5 +1,6 @@
 import hashlib
 import io
+import json
 import os
 import tarfile
 from pathlib import Path
@@ -165,3 +166,62 @@ def test_release_requires_the_matching_source_archive(bundle, tmp_path):
         "name": source.name,
         "sha256": locked,
     }
+
+
+@pytest.mark.parametrize("source_matches", [True, False])
+def test_release_stages_original_build_inputs_from_source_archive(
+    bundle, tmp_path, monkeypatch, source_matches
+):
+    relative = "scripts/build-native-runtime.py"
+    original = b"original build recipe"
+    runner = b"\x7fELF\x02\x01" + bytes(12) + b"\x3e\x00"
+    runner_sha256 = hashlib.sha256(runner).hexdigest()
+    runtime = {
+        "id": "ons:test",
+        "engine_id": "ons",
+        "flavor": "fixture",
+        "executable": "runner",
+        "binary_sha256": runner_sha256,
+    }
+    archives = tmp_path / "archives"
+    archives.mkdir()
+    native = archives / bundle["NATIVE_ARCHIVE_NAME"]
+    sources = archives / bundle["SOURCE_ARCHIVE_NAME"]
+    for archive, name, data in (
+        (native, "runtimes/onscripter/fixture/runner", runner),
+        (sources, f"build-inputs/{relative}", original if source_matches else b"wrong recipe"),
+    ):
+        with tarfile.open(archive, "w:gz") as tar:
+            member = tarfile.TarInfo(name)
+            member.size = len(data)
+            tar.addfile(member, io.BytesIO(data))
+    lock = tmp_path / "lock.json"
+    lock.write_text(
+        json.dumps(
+            {
+                "archive_sha256": bundle["checksum"](native),
+                "source_archive_sha256": bundle["checksum"](sources),
+                "runtimes": [
+                    {
+                        "manifest": runtime,
+                        "directory": "fixture",
+                        "files": {"runner": runner_sha256},
+                        "build_inputs": {relative: hashlib.sha256(original).hexdigest()},
+                        "sources": {},
+                    }
+                ],
+            }
+        )
+    )
+    globals_ = bundle["prepare"].__globals__
+    monkeypatch.setitem(globals_, "NATIVE_LOCK", lock)
+    monkeypatch.setitem(globals_, "stage_renpy", lambda *_: [])
+    output = tmp_path / "bundle"
+    if not source_matches:
+        with pytest.raises(ValueError, match="Native build input differs from lock"):
+            bundle["prepare"](output, tmp_path / "cache", archives)
+        assert not output.exists()
+        return
+
+    bundle["prepare"](output, tmp_path / "cache", archives)
+    assert (output / "licenses/native/fixture/build-inputs" / relative).read_bytes() == original

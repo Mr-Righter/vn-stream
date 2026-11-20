@@ -53,16 +53,7 @@ SPECS = {
         executable="build/linux/onscripter",
         license="LICENSE",
     ),
-    "krkr2": dict(
-        engine_id="krkr",
-        repo="https://github.com/2468785842/krkr2.git",
-        commit="c8d0e384ed52366b4584244f0a8c011308da5516",
-        version="1.5.0",
-        executable="out/vn-linux/bin/krkr2/krkr2",
-        license="LICENSE",
-    ),
 }
-VCPKG_COMMIT = "4702e381dbbd9b54d3f7e1eb565cd8981c1814cd"
 COMMANDS = {
     "new": "./configure --std=gnu++23 --no-lto && make -j3",
     "yuri": "cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j3",
@@ -72,11 +63,6 @@ COMMANDS = {
     '-lfontconfig -logg -lvorbis -lvorbisfile -llua5.3" -j3',
     "zero": "cmake -S /native-build/zero -B build/linux -DCMAKE_BUILD_TYPE=Release "
     "-DONS_SOURCE=/build/zero && cmake --build build/linux -j3",
-    "krkr2": "cd /build/vcpkg-tool && { test -x ./vcpkg || ./bootstrap-vcpkg.sh -disableMetrics; } && "
-    "export VCPKG_ROOT=/build/vcpkg-tool VCPKG_FORCE_SYSTEM_BINARIES=1 VCPKG_MAX_CONCURRENCY=3 && "
-    "cd /build/krkr2 && cmake -S . -B out/vn-linux -G Ninja -DCMAKE_BUILD_TYPE=Release "
-    "-DLINUX=ON -DKRKR2_USE_COCOS_UI=OFF -DENABLE_TESTS=OFF -DBUILD_TOOLS=OFF "
-    "-DKRKR2_ENABLE_PSD=OFF && cmake --build out/vn-linux -j3",
 }
 
 
@@ -84,7 +70,7 @@ def run(*args, **kwargs):
     return subprocess.run(args, check=True, **kwargs)
 
 
-def checkout(directory, repo, commit, *, patch=None, allowed_untracked=(), input_roots=()):
+def checkout(directory, repo, commit, *, patch=None):
     if not directory.exists():
         run("git", "init", str(directory))
         run("git", "-C", str(directory), "remote", "add", "origin", repo)
@@ -97,60 +83,15 @@ def checkout(directory, repo, commit, *, patch=None, allowed_untracked=(), input
     allowed = patch.read_bytes() if patch else b""
     if actual != commit or (diff and diff != allowed):
         raise ValueError("Build checkout differs from the pinned source; use a new work directory")
-    untracked = (
-        subprocess.check_output(
-            ["git", "-C", str(directory), "ls-files", "--others", "--exclude-standard", "-z"]
-        )
-        .decode()
-        .split("\0")
+    untracked = subprocess.check_output(
+        ["git", "-C", str(directory), "ls-files", "--others", "--exclude-standard", "-z"]
     )
-    if input_roots:
-        untracked += (
-            subprocess.check_output(
-                [
-                    "git",
-                    "-C",
-                    str(directory),
-                    "ls-files",
-                    "--others",
-                    "--ignored",
-                    "--exclude-standard",
-                    "-z",
-                    "--",
-                    *input_roots,
-                ]
-            )
-            .decode()
-            .split("\0")
-        )
-    unexpected = set(untracked) - {"", *allowed_untracked}
-    if unexpected:
+    if untracked:
         raise ValueError(
             "Build checkout contains unexpected untracked inputs; use a clean directory"
         )
     if patch and not diff:
         run("git", "-C", str(directory), "apply", str(patch.resolve()))
-
-
-def prepare_krkr_components(source, work, root):
-    """Pin real native plugin implementations independently of the engine fork."""
-    spec = json.loads((root / "containers/native-patches/krkr/krkr2-components.json").read_text())
-    component = work / "krkr2-components"
-    checkout(component, spec["repo"], spec["commit"])
-    for name, expected in spec["imports/sources"].items():
-        path = component / name
-        if path.is_symlink() or hashlib.sha256(path.read_bytes()).hexdigest() != expected:
-            raise ValueError("Native component content differs from its pinned identity")
-        if name != spec["license"]:
-            target = source / name
-            if target.exists() and target.read_bytes() != path.read_bytes():
-                raise ValueError("Native component destination contains an unexpected modification")
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(path, target)
-    (source / ".vn-stream-components.json").write_text(json.dumps(spec, indent=2))
-    licenses = source / ".vn-stream-licenses"
-    licenses.mkdir(exist_ok=True)
-    shutil.copy2(component / spec["license"], licenses / "krkr2-components-LICENSE")
 
 
 def publish(source, output, flavor, *, build_image=None):
@@ -159,37 +100,7 @@ def publish(source, output, flavor, *, build_image=None):
     if not binary.is_file() or binary.is_symlink():
         raise ValueError("Expected runtime binary was not produced")
     digest = hashlib.sha256(binary.read_bytes()).hexdigest()
-    resource_files = {}
-    if flavor == "krkr2":
-        resources = binary.parent / "Resources"
-        if resources.is_symlink() or not (resources / "locale/en_us.xml").is_file():
-            raise ValueError("The krkr runtime requires its default locale resource")
-        total = 0
-        for path in sorted(resources.rglob("*")):
-            if path.is_symlink():
-                raise ValueError("Runtime resource symlinks are not permitted")
-            if path.is_file():
-                total += path.stat().st_size
-                if total > 64 * 1024**2 or len(resource_files) >= 256:
-                    raise ValueError("Runtime resources exceed the package limit")
-                resource_files[path.relative_to(binary.parent).as_posix()] = hashlib.sha256(
-                    path.read_bytes()
-                ).hexdigest()
-        audio_profile = (
-            Path(__file__).resolve().parents[1] / "containers/native-patches/krkr/krkr2-alsoft.conf"
-        )
-        audio_name = "Resources/vn-stream-alsoft.conf"
-        if (
-            audio_name in resource_files
-            or len(resource_files) >= 256
-            or total + audio_profile.stat().st_size > 64 * 1024**2
-        ):
-            raise ValueError("Runtime audio profile conflicts with the resource package")
-        resource_files[audio_name] = hashlib.sha256(audio_profile.read_bytes()).hexdigest()
-    resource_digest = hashlib.sha256(
-        json.dumps(resource_files, sort_keys=True).encode()
-    ).hexdigest()
-    identity = digest[:12] + ("-" + resource_digest[:12] if resource_files else "")
+    identity = digest[:12]
     key = f"{spec['engine_id']}-{flavor}-{spec['commit'][:12]}-{identity}"
     output = engine_directory(output, spec["engine_id"], ADAPTERS)
     target = output / key
@@ -201,9 +112,6 @@ def publish(source, output, flavor, *, build_image=None):
         pending.mkdir()
         shutil.copy2(binary, pending / "runner")
         (pending / "runner").chmod(0o755)
-        if resource_files:
-            shutil.copytree(resources, pending / "Resources")
-            shutil.copy2(audio_profile, pending / audio_name)
         shutil.copy2(source / spec["license"], pending / "LICENSE")
         record = dict(
             schema=1,
@@ -251,26 +159,6 @@ def publish(source, output, flavor, *, build_image=None):
             record["build_patch_sha256"] = hashlib.sha256(patch.read_bytes()).hexdigest()
             shutil.copy2(patch, pending / "source.patch")
             shutil.copytree(overlay / "licenses", pending / "THIRD_PARTY")
-        if resource_files:
-            record.update(resource_files=resource_files, resource_sha256=resource_digest)
-            record["build_patch_sha256"] = hashlib.sha256(
-                (
-                    Path(__file__).resolve().parents[1]
-                    / "containers/native-patches/krkr/krkr2-plugins.patch"
-                ).read_bytes()
-            ).hexdigest()
-        components = source / ".vn-stream-components.json"
-        if flavor == "krkr2" and components.exists():
-            record["components"] = json.loads(components.read_text())
-            shutil.copytree(source / ".vn-stream-licenses", pending / "THIRD_PARTY")
-        if "Resources/NotoSansCJK-Regular.ttc" in resource_files:
-            notices = pending / "THIRD_PARTY"
-            notices.mkdir(exist_ok=True)
-            shutil.copy2(
-                Path(__file__).resolve().parents[1]
-                / "containers/native-patches/krkr/NotoSansCJK-OFL.txt",
-                notices / "NotoSansCJK-OFL.txt",
-            )
         serialized = json.dumps(record, indent=2) + "\n"
         if len(serialized.encode()) > 16384:
             raise ValueError("Native runtime manifest exceeds the supported size")
@@ -307,34 +195,17 @@ def main():
     work.mkdir(parents=True, exist_ok=True)
     spec = SPECS[args.flavor]
     root = Path(__file__).resolve().parents[1]
-    patches = {
-        "krkr2": root / "containers/native-patches/krkr/krkr2-plugins.patch",
-        "zero": root / "containers/native-patches/ons/zero-mask-alignment.patch",
-    }
-    patch = patches.get(args.flavor)
-    components = json.loads(
-        (root / "containers/native-patches/krkr/krkr2-components.json").read_text()
-    )
-    allowed = (
-        [
-            *components["imports/sources"],
-            ".vn-stream-components.json",
-            ".vn-stream-licenses/krkr2-components-LICENSE",
-        ]
-        if args.flavor == "krkr2"
-        else []
+    patch = (
+        root / "containers/native-patches/ons/zero-mask-alignment.patch"
+        if args.flavor == "zero"
+        else None
     )
     checkout(
         work / args.flavor,
         spec["repo"],
         spec["commit"],
         patch=patch,
-        allowed_untracked=allowed,
-        input_roots=("assets", "cpp", "cmake") if args.flavor == "krkr2" else (),
     )
-    if args.flavor == "krkr2":
-        checkout(work / "vcpkg-tool", "https://github.com/microsoft/vcpkg.git", VCPKG_COMMIT)
-        prepare_krkr_components(work / args.flavor, work, root)
     if not args.use_existing_builder:
         run(
             "docker",

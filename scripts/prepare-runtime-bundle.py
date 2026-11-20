@@ -29,6 +29,7 @@ NATIVE_LIMIT_BYTES = 512 * CHUNK_BYTES
 NATIVE_ARCHIVE_NAME = "native-runtimes-linux-amd64.tar.gz"
 SOURCE_ARCHIVE_NAME = "runtime-sources-linux-amd64.tar.gz"
 SOURCE_LIMIT_BYTES = 2000 * CHUNK_BYTES
+BUILD_INPUT_LIMIT_BYTES = 1024**2
 SDK_LIBRARIES = {"linux-x86_64", "py2-linux-x86_64", "py3-linux-x86_64"}
 
 
@@ -197,7 +198,39 @@ def assemble_native_archive(output, lock, inputs):
         publish(pending, output)
 
 
-def stage_native(archive, stage, lock):
+def read_source_build_inputs(archive, runtimes):
+    # Released binaries refer to the recipes used to build them, which can
+    # differ from the tools in the current checkout.
+    pending = {
+        f"build-inputs/{relative}": digest
+        for entry in runtimes
+        for relative, digest in entry["build_inputs"].items()
+    }
+    inputs = {}
+    with tarfile.open(archive, mode="r|gz") as tar:
+        for member in tar:
+            expected = pending.pop(member.name, None)
+            if expected is None:
+                continue
+            if (
+                not member.isfile()
+                or member.issparse()
+                or not 0 <= member.size <= BUILD_INPUT_LIMIT_BYTES
+            ):
+                raise ValueError(f"Invalid archived native build input: {member.name}")
+            with tar.extractfile(member) as source:
+                contents = source.read()
+            if hashlib.sha256(contents).hexdigest() != expected:
+                raise ValueError(f"Native build input differs from lock: {member.name}")
+            inputs[member.name.removeprefix("build-inputs/")] = contents
+            if not pending:
+                break
+    if pending:
+        raise ValueError("Missing archived native build inputs: " + ", ".join(sorted(pending)))
+    return inputs
+
+
+def stage_native(archive, stage, lock, source_archive=None):
     if (
         archive.is_symlink()
         or not archive.is_file()
@@ -206,6 +239,7 @@ def stage_native(archive, stage, lock):
     ):
         raise ValueError(f"Supply the pinned {NATIVE_ARCHIVE_NAME} in {archive.parent}")
     runtimes = lock["runtimes"]
+    build_inputs = read_source_build_inputs(source_archive, runtimes) if source_archive else {}
     files = {path: (digest, mode) for _, _, path, digest, mode in native_archive_files(stage, lock)}
     extract_native_archive(archive, stage, files)
     for entry in runtimes:
@@ -228,13 +262,11 @@ def stage_native(archive, stage, lock):
             destination = notices / name
             destination.parent.mkdir(parents=True, exist_ok=True)
             os.link(directory / name, destination)
-        for relative, digest in entry["build_inputs"].items():
-            source = ROOT / relative
-            if checksum(source) != digest:
-                raise ValueError(f"Native build input differs from lock: {relative}")
-            destination = notices / "build-inputs" / relative
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(source, destination)
+        if source_archive is not None:
+            for relative in entry["build_inputs"]:
+                destination = notices / "build-inputs" / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(build_inputs[relative])
         write_json(notices / "sources.json", entry["sources"])
     return [{"id": entry["manifest"]["id"], "files": entry["files"]} for entry in runtimes]
 
@@ -283,7 +315,12 @@ def prepare(output, cache, native_archives, *, isolated=False):
     with tempfile.TemporaryDirectory(dir=output.parent, prefix=".runtime-bundle-") as temporary:
         stage = Path(temporary) / "bundle"
         stage.mkdir(mode=0o755)
-        native = stage_native(native_archives / NATIVE_ARCHIVE_NAME, stage, lock)
+        native = stage_native(
+            native_archives / NATIVE_ARCHIVE_NAME,
+            stage,
+            lock,
+            source_archive=native_archives / sources["name"] if sources else None,
+        )
         renpy = stage_renpy(stage, cache)
         provenance = {
             "schema": 1,
@@ -305,7 +342,7 @@ def main():
     parser.add_argument(
         "--isolated",
         action="store_true",
-        help="Prepare binaries for local testing before corresponding source is locked",
+        help="Prepare binaries for local testing without the corresponding source archive",
     )
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--native-archives", type=Path, help="Pinned archive directory")
@@ -318,7 +355,9 @@ def main():
     args = parser.parse_args()
     try:
         if args.assemble_native_from is None:
-            prepare(args.output.absolute(), args.cache, args.native_archives, isolated=args.isolated)
+            prepare(
+                args.output.absolute(), args.cache, args.native_archives, isolated=args.isolated
+            )
         else:
             inputs = {}
             for item in args.assemble_native_from:

@@ -1,6 +1,0 @@
-# All engine families share the configured game root.
-# Projects are stored under renpy/, onscripter/ and kirikiri/.
-services:
-  vn-stream:
-    environment:
-      VN_STREAM_LIBRARY_ROOT: /games
