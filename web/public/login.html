@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" type="image/x-icon" sizes="32x32" href="/favicon.ico" />
+    <link rel="apple-touch-icon" sizes="192x192" href="/app-icons/icon-192.png" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="VN Stream" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="theme-color" content="__VN_THEME_BACKGROUND__" />
+    <title>VN Stream</title>
+
+    <link rel="stylesheet" href="./ui.css" />
+  </head>
+  <body class="login-page">
+    <div id="root">
+      <main class="vn-shell vn-login-shell">
+        <section class="vn-login-card">
+          <p class="login-brand">VN STREAM</p>
+          <h1 data-i18n="ui.welcomeBack"></h1>
+          <p data-i18n="ui.signInToContinueYourStory"></p>
+          <form id="login-form" method="post" action="/api/v2/auth/login">
+            <fieldset disabled>
+              <label for="username" data-i18n="ui.username"></label>
+              <input
+                id="username"
+                name="username"
+                type="text"
+                autocomplete="username"
+                autocapitalize="none"
+                spellcheck="false"
+                required
+              />
+              <label for="password" data-i18n="ui.password"></label>
+              <input
+                id="password"
+                name="password"
+                type="password"
+                autocomplete="current-password"
+                required
+              />
+              <label class="remember-login"
+                ><input id="remember" name="remember" type="checkbox" checked /><span
+                  data-i18n="ui.keepMeSignedInFor30Days"
+                ></span
+              ></label>
+              <p id="login-error" role="alert" aria-live="polite"></p>
+              <button
+                id="login-submit"
+                type="submit"
+                variant="brand"
+                data-i18n="ui.signIn"
+              ></button>
+            </fieldset>
+          </form>
+        </section>
+      </main>
+    </div>
+    <script type="module" src="./login.js"></script>
+  </body>
+</html>

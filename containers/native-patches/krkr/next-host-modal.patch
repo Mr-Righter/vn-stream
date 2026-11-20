@@ -1,0 +1,667 @@
+--- a/cpp/core/environ/stubs/ui_stubs.cpp
++++ b/cpp/core/environ/stubs/ui_stubs.cpp
+@@ -25,6 +25,10 @@
+ #include "Platform.h"
+ #include "TVPWindow.h"
+ #include "Application.h"
++#include "HostWindow.h"
++#include "EventIntf.h"
++#include <algorithm>
++#include <stdexcept>
+ #include "RenderManager.h"
+ #include "krkr_egl_context.h"
+ #include "SysInitImpl.h"
+@@ -42,11 +46,29 @@
+ // Provides a logical window backed by the ANGLE EGL Pbuffer surface.
+ // Rendering output goes through glReadPixels in the engine_api layer.
+ // ---------------------------------------------------------------------------
++class FlutterWindowLayer;
++static std::vector<FlutterWindowLayer*> s_hostWindows;
++static std::vector<FlutterWindowLayer*> s_modalWindows;
++static TVPHostModalPump s_modalPump = nullptr;
++static void* s_modalContext = nullptr;
++static bool s_composing = false;
++static bool s_clearFrame = false;
++
++void TVPSetHostModalPump(TVPHostModalPump pump, void* context) {
++    s_modalPump = pump;
++    s_modalContext = context;
++}
++
++void TVPClearHostModalPump(void* context) {
++    if (s_modalContext == context) TVPSetHostModalPump(nullptr, nullptr);
++}
++
+ class FlutterWindowLayer : public iWindowLayer {
+ public:
+     explicit FlutterWindowLayer(tTJSNI_Window *owner)
+-        : owner_(owner), visible_(true), caption_("krkr2"),
++        : owner_(owner), visible_(false), caption_("krkr2"),
+           width_(0), height_(0), active_(true), closing_(false) {
++        s_hostWindows.push_back(this);
+         // Get initial size from EGL context
+         auto& egl = krkr::GetEngineEGLContext();
+         if (egl.IsValid()) {
+@@ -60,6 +82,7 @@
+     }
+ 
+     ~FlutterWindowLayer() {
++        s_hostWindows.erase(std::remove(s_hostWindows.begin(), s_hostWindows.end(), this), s_hostWindows.end());
+         if(blit_program_) {
+             glDeleteProgram(blit_program_);
+             blit_program_ = 0;
+@@ -100,7 +123,10 @@
+                       w, h, surf_w, surf_h);
+     }
+ 
+-    bool GetFormEnabled() override { return !closing_; }
++    tTJSNI_Window* Owner() const { return owner_; }
++    bool GetFormEnabled() override {
++        return !closing_ && (s_modalWindows.empty() || s_modalWindows.back() == this);
++    }
+ 
+     void SetDefaultMouseCursor() override {}
+ 
+@@ -132,7 +158,33 @@
+     void BringToFront() override {}
+ 
+     void ShowWindowAsModal() override {
+-        spdlog::warn("FlutterWindowLayer::ShowWindowAsModal: stub");
++        if (!s_modalPump || !owner_ || owner_ == TVPMainWindow)
++            throw std::runtime_error("A modal window requires an attached host and a parent window");
++        if (std::find(s_modalWindows.begin(), s_modalWindows.end(), this) != s_modalWindows.end())
++            throw std::runtime_error("Window is already modal");
++        // A native modal activation releases the previous window's capture.
++        // Do this synchronously: ShowModal clears queued input, including the
++        // release posted by window construction, and may run inside MouseDown.
++        if (auto* previous = TVPGetHostInputWindow()) previous->OnReleaseCapture();
++        closing_ = false;
++        visible_ = true;
++        s_modalWindows.push_back(this);
++        auto leave = [this]() {
++            TVPClearAllWindowInputEvents();
++            s_modalWindows.pop_back();
++            visible_ = false;
++        };
++        try {
++            while (!closing_ && visible_ && !TVPTerminated) {
++                if (!s_modalPump(s_modalContext)) break;
++            }
++        } catch (...) {
++            leave();
++            if (!owner_) delete this;
++            throw;
++        }
++        leave();
++        if (!owner_) delete this;
+     }
+ 
+     bool GetVisible() override { return visible_; }
+@@ -176,7 +228,7 @@
+         // When an IOSurface is attached, this goes directly to the shared
+         // IOSurface (zero-copy to Flutter). Otherwise, falls back to
+         // the EGL Pbuffer for glReadPixels-based retrieval.
+-        if (!tex) return;
++        if (!tex || !visible_ || closing_ || !owner_) return;
+ 
+         const tjs_uint tw = tex->GetWidth();
+         const tjs_uint th = tex->GetHeight();
+@@ -283,10 +335,26 @@
+             vpX = static_cast<GLsizei>((fbW - vpW) / 2);
+         }
+ 
+-        // Clear entire framebuffer to black (produces the letterbox bars)
++        if (owner_ != TVPMainWindow && TVPMainWindow && TVPMainWindow->GetDrawDevice()) {
++            tjs_int mainW = 0, mainH = 0;
++            TVPMainWindow->GetDrawDevice()->GetSrcSize(mainW, mainH);
++            if (mainW > 0 && mainH > 0) {
++                const float scale = std::min(static_cast<float>(fbW) / mainW,
++                                             static_cast<float>(fbH) / mainH);
++                vpX = static_cast<GLsizei>((fbW - mainW * scale) / 2 + GetLeft() * scale);
++                vpY = static_cast<GLsizei>((fbH - mainH * scale) / 2 + (mainH - GetTop() - static_cast<tjs_int>(th)) * scale);
++                vpW = static_cast<GLsizei>(tw * scale);
++                vpH = static_cast<GLsizei>(th * scale);
++            }
++        }
++
++        // Clear once per composed frame, never erase the parent for a dialog.
+         glViewport(0, 0, static_cast<GLsizei>(fbW), static_cast<GLsizei>(fbH));
+-        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+-        glClear(GL_COLOR_BUFFER_BIT);
++        if (!s_composing || s_clearFrame) {
++            glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
++            glClear(GL_COLOR_BUFFER_BIT);
++            s_clearFrame = false;
++        }
+ 
+         // Set viewport to the aspect-correct sub-region
+         glViewport(vpX, vpY, vpW, vpH);
+@@ -298,9 +366,9 @@
+             if (dd) {
+                 tTVPRect dest;
+                 dest.left   = static_cast<tjs_int>(vpX);
+-                dest.top    = static_cast<tjs_int>(vpY);
++                dest.top    = static_cast<tjs_int>(fbH - vpY - vpH);
+                 dest.right  = static_cast<tjs_int>(vpX + vpW);
+-                dest.bottom = static_cast<tjs_int>(vpY + vpH);
++                dest.bottom = static_cast<tjs_int>(fbH - vpY);
+                 dd->SetDestRectangle(dest);
+                 dd->SetClipRectangle(dest);
+                 dd->SetViewport(dest);
+@@ -382,20 +450,24 @@
+ 
+     void InvalidateClose() override {
+         closing_ = true;
+-    }
+-
+-    bool GetWindowActive() override { return active_; }
++        visible_ = false;
++        owner_ = nullptr;
++        // The executing ShowModal frame keeps the form alive until unwinding.
++        if (std::find(s_modalWindows.begin(), s_modalWindows.end(), this) == s_modalWindows.end())
++            delete this;
++    }
++
++    bool GetWindowActive() override { return active_ && visible_ && GetFormEnabled(); }
+ 
+     void Close() override {
++        if (owner_ && !closing_) owner_->OnClose();
++    }
++
++    void OnCloseQueryCalled(bool accepted) override {
++        if (!accepted || closing_) return;
+         closing_ = true;
+-        spdlog::debug("FlutterWindowLayer::Close called");
+-        TVPTerminateAsync(0);
+-    }
+-
+-    void OnCloseQueryCalled(bool b) override {
+-        if (b) {
+-            Close();
+-        }
++        visible_ = false;
++        if (owner_ == TVPMainWindow) TVPTerminateAsync(0);
+     }
+ 
+     void InternalKeyDown(tjs_uint16 key, tjs_uint32 shift) override {}
+@@ -570,6 +642,28 @@
+ // TVPCreateAndAddWindow — originally in MainScene.cpp
+ // Creates a FlutterWindowLayer and registers it with the application.
+ // ---------------------------------------------------------------------------
++tTJSNI_Window* TVPGetHostInputWindow() {
++    return s_modalWindows.empty() ? TVPMainWindow : s_modalWindows.back()->Owner();
++}
++
++void TVPComposeHostWindows() {
++    s_composing = true;
++    s_clearFrame = true;
++    try {
++        for (auto* form : s_hostWindows) {
++            if (form->Owner() && form->GetVisible() &&
++                (s_modalWindows.empty() || form != s_modalWindows.back()))
++                form->Owner()->DeliverDrawDeviceShow();
++        }
++        if (!s_modalWindows.empty() && s_modalWindows.back()->Owner())
++            s_modalWindows.back()->Owner()->DeliverDrawDeviceShow();
++    } catch (...) {
++        s_composing = false;
++        throw;
++    }
++    s_composing = false;
++}
++
+ iWindowLayer *TVPCreateAndAddWindow(tTJSNI_Window *w) {
+     auto *layer = new FlutterWindowLayer(w);
+     spdlog::info("TVPCreateAndAddWindow: created FlutterWindowLayer ({}x{})",
+--- a/cpp/core/environ/EngineLoop.cpp
++++ b/cpp/core/environ/EngineLoop.cpp
+@@ -8,6 +8,7 @@
+  */
+ 
+ #include "EngineLoop.h"
++#include "HostWindow.h"
+ 
+ #include <spdlog/spdlog.h>
+ 
+@@ -195,7 +196,7 @@
+ }
+ 
+ void EngineLoop::HandlePointerDown(const EngineInputEvent& event) {
+-    auto* win = TVPMainWindow;
++    auto* win = TVPGetHostInputWindow();
+     if (!win) return;
+ 
+     const tjs_int x = static_cast<tjs_int>(event.x);
+@@ -234,6 +235,7 @@
+         default: break;
+     }
+ 
++    last_mouse_down_window_ = win;
+     last_mouse_down_x_ = x;
+     last_mouse_down_y_ = y;
+ 
+@@ -242,7 +244,7 @@
+ }
+ 
+ void EngineLoop::HandlePointerMove(const EngineInputEvent& event) {
+-    auto* win = TVPMainWindow;
++    auto* win = TVPGetHostInputWindow();
+     if (!win) return;
+ 
+     const tjs_int x = static_cast<tjs_int>(event.x);
+@@ -258,7 +260,7 @@
+ }
+ 
+ void EngineLoop::HandlePointerUp(const EngineInputEvent& event) {
+-    auto* win = TVPMainWindow;
++    auto* win = TVPGetHostInputWindow();
+     if (!win) return;
+ 
+     const tjs_int x = static_cast<tjs_int>(event.x);
+@@ -290,10 +292,11 @@
+     TVPPostInputEvent(
+         new tTVPOnMouseUpInputEvent(win, x, y, mb, shift));
+ 
++    // A press begun in another window must not answer a newly opened modal.
+     // Post click event after mouse-up, matching the original Windows engine
+     // which fires OnMouseClick (→ Window.onClick → PrimaryClick) after
+     // OnMouseUp.  Uses the stored down position per original behavior.
+-    if (mb == mbLeft) {
++    if (mb == mbLeft && last_mouse_down_window_ == win) {
+         TVPPostInputEvent(
+             new tTVPOnClickInputEvent(win, last_mouse_down_x_,
+                                       last_mouse_down_y_));
+@@ -301,7 +304,7 @@
+ }
+ 
+ void EngineLoop::HandlePointerScroll(const EngineInputEvent& event) {
+-    auto* win = TVPMainWindow;
++    auto* win = TVPGetHostInputWindow();
+     if (!win) return;
+ 
+     const tjs_int x = static_cast<tjs_int>(event.x);
+@@ -319,7 +322,7 @@
+ }
+ 
+ void EngineLoop::HandleKeyDown(const EngineInputEvent& event) {
+-    auto* win = TVPMainWindow;
++    auto* win = TVPGetHostInputWindow();
+     if (!win) return;
+ 
+     tjs_uint key = static_cast<tjs_uint>(event.key_code);
+@@ -341,7 +344,7 @@
+ }
+ 
+ void EngineLoop::HandleKeyUp(const EngineInputEvent& event) {
+-    auto* win = TVPMainWindow;
++    auto* win = TVPGetHostInputWindow();
+     if (!win) return;
+ 
+     const tjs_uint key = static_cast<tjs_uint>(event.key_code);
+@@ -357,7 +360,7 @@
+ }
+ 
+ void EngineLoop::HandleTextInput(const EngineInputEvent& event) {
+-    auto* win = TVPMainWindow;
++    auto* win = TVPGetHostInputWindow();
+     if (!win) return;
+ 
+     if (event.unicode_codepoint > 0 && event.unicode_codepoint <= 0xFFFF) {
+--- a/cpp/core/environ/EngineLoop.h
++++ b/cpp/core/environ/EngineLoop.h
+@@ -14,6 +14,7 @@
+ 
+ #include <cstdint>
+ #include <string>
++class tTJSNI_Window;
+ 
+ // ---------------------------------------------------------------------------
+ // Input event types (mirror of engine_api.h, kept separate to avoid
+@@ -117,6 +118,7 @@
+     void DoStartup(const std::string& path);
+ 
+     // Input helpers
++    tTJSNI_Window* last_mouse_down_window_ = nullptr;
+     void HandlePointerDown(const EngineInputEvent& event);
+     void HandlePointerMove(const EngineInputEvent& event);
+     void HandlePointerUp(const EngineInputEvent& event);
+--- a/cpp/core/environ/win32/TVPWindow.h
++++ b/cpp/core/environ/win32/TVPWindow.h
+@@ -317,6 +317,8 @@
+ using TVPOverlayNode = void;
+ 
+ class iWindowLayer {
++    tjs_int host_left_ = 0;
++    tjs_int host_top_ = 0;
+ protected:
+     tTVPMouseCursorState MouseCursorState = mcsVisible;
+     tjs_int HintDelay = 500;
+@@ -386,8 +388,8 @@
+     // dummy function
+     void RegisterWindowMessageReceiver(tTVPWMRRegMode mode, void *proc,
+                                        const void *userdata) {}
+-    void SetLeft(tjs_int) {}
+-    void SetTop(tjs_int) {}
++    void SetLeft(tjs_int value) { host_left_ = value; }
++    void SetTop(tjs_int value) { host_top_ = value; }
+     void SetMinWidth(tjs_int) {}
+     void SetMaxWidth(tjs_int) {}
+     void SetMinHeight(tjs_int) {}
+@@ -397,12 +399,12 @@
+     void SetInnerSize(tjs_int w, tjs_int h) { SetSize(w, h); }
+     void SetMinSize(tjs_int, tjs_int) {}
+     void SetMaxSize(tjs_int, tjs_int) {}
+-    void SetPosition(tjs_int, tjs_int) {}
++    void SetPosition(tjs_int left, tjs_int top) { host_left_ = left; host_top_ = top; }
+     void SetBorderStyle(tTVPBorderStyle) {}
+     void SetStayOnTop(bool) {}
+     void SetFullScreenMode(bool) {}
+-    tjs_int GetLeft() { return 0; }
+-    tjs_int GetTop() { return 0; }
++    tjs_int GetLeft() { return host_left_; }
++    tjs_int GetTop() { return host_top_; }
+     tjs_int GetMinWidth() { return 0; }
+     tjs_int GetMaxWidth() { return 1920; }
+     tjs_int GetMinHeight() { return 0; }
+--- a/bridge/engine_api/src/engine_api.cpp
++++ b/bridge/engine_api/src/engine_api.cpp
+@@ -37,6 +37,8 @@
+ #include "environ/Platform.h"
+ #include "environ/EngineBootstrap.h"
+ #include "environ/EngineLoop.h"
++#include "environ/HostWindow.h"
++#include "base/EventIntf.h"
+ #include "environ/MainScene.h"
+ #include "base/StorageIntf.h"
+ #include "base/SysInitIntf.h"
+@@ -64,6 +66,8 @@
+   std::thread::id owner_thread;
+   bool runtime_owner = false;
+   uint64_t tick_count = 0;
++  engine_host_callbacks_t host_callbacks{};
++  bool opening = false;
+ 
+   // Frame state — readback buffer and tracking
+   struct FrameState {
+@@ -388,6 +392,15 @@
+   layout.width = impl->frame.surface_width;
+   layout.height = impl->frame.surface_height;
+ 
++#if defined(__linux__) && !defined(__ANDROID__)
++  auto& surface = krkr::GetEngineEGLContext();
++  if (surface.IsValid()) {
++    layout.width = surface.GetWidth();
++    layout.height = surface.GetHeight();
++    layout.stride_bytes = layout.width * 4u;
++    return layout;
++  }
++#endif
+   GLint viewport[4] = {0, 0, 0, 0};
+   glGetIntegerv(GL_VIEWPORT, viewport);
+   if (glGetError() == GL_NO_ERROR && viewport[2] > 0 && viewport[3] > 0) {
+@@ -491,6 +504,80 @@
+     *out_error_message = nullptr;
+   }
+   return ENGINE_RESULT_OK;
++}
++
++void CaptureFrameLocked(engine_handle_s* impl) {
++  // Mark that a frame was rendered this tick (for IOSurface mode notification)
++  impl->frame.rendered_this_tick = true;
++
++  // In IOSurface mode, the engine renders directly to the shared IOSurface
++  // via the FBO — no need for glReadPixels. Skip the expensive readback.
++  if (impl->render.native_window_attached) {
++    // Android WindowSurface mode — TVPForceSwapBuffer() (called by
++    // TVPDrawSceneOnce above) already performed eglSwapBuffers to deliver
++    // the frame to Flutter's SurfaceTexture. Just update frame tracking.
++    impl->frame.serial += 1;
++    impl->frame.ready = true;
++  } else if (!impl->render.iosurface_attached) {
++    // Legacy Pbuffer readback path (slow, for backward compatibility)
++    const FrameReadbackLayout layout = GetFrameReadbackLayoutLocked(impl);
++    const size_t required_size =
++        static_cast<size_t>(layout.stride_bytes) *
++        static_cast<size_t>(layout.height);
++    if (impl->frame.rgba.size() != required_size) {
++      impl->frame.rgba.assign(required_size, 0);
++    }
++
++    if (required_size > 0 &&
++        ReadCurrentFrameRgba(layout, impl->frame.rgba.data())) {
++      impl->frame.width = layout.width;
++      impl->frame.height = layout.height;
++      impl->frame.stride_bytes = layout.stride_bytes;
++      impl->frame.ready = true;
++      impl->frame.serial += 1;
++    } else if (!impl->frame.ready && required_size > 0) {
++      std::fill(impl->frame.rgba.begin(), impl->frame.rgba.end(), 0);
++      impl->frame.width = layout.width;
++      impl->frame.height = layout.height;
++      impl->frame.stride_bytes = layout.stride_bytes;
++      impl->frame.ready = true;
++      impl->frame.serial += 1;
++    }
++  } else {
++    // IOSurface mode — just increment frame serial, no readback needed.
++    // The render output is already in the shared IOSurface.
++    glFlush(); // Ensure GPU commands are submitted
++    impl->frame.serial += 1;
++    impl->frame.ready = true;
++  }
++
++}
++
++bool PumpModalHost(void* context) {
++  auto* impl = static_cast<engine_handle_s*>(context);
++  auto& callbacks = impl->host_callbacks;
++  if (!callbacks.pump_events || !callbacks.present_frame ||
++      impl->owner_thread != std::this_thread::get_id()) return false;
++  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(16);
++  if (!callbacks.pump_events(callbacks.user_data)) return false;
++  while (!impl->input.pending_events.empty()) {
++    const auto event = impl->input.pending_events.front();
++    impl->input.pending_events.pop_front();
++    const char* error = nullptr;
++    if (DispatchInputEventNow(impl, event, &error) != ENGINE_RESULT_OK)
++      throw std::runtime_error(error ? error : "modal input dispatch failed");
++  }
++  if (Application) Application->Run();
++  if (TVPTerminated) return false;
++  TVPDeliverWindowUpdateEvents();
++  TVPComposeHostWindows();
++  TVPDrawSceneOnce(0);
++  CaptureFrameLocked(impl);
++  if (impl->frame.ready)
++    callbacks.present_frame(callbacks.user_data, impl->frame.rgba.data(),
++                            impl->frame.width, impl->frame.height, impl->frame.stride_bytes);
++  std::this_thread::sleep_until(deadline);
++  return true;
+ }
+ 
+ engine_result_t OpenGameCore(engine_handle_t handle,
+@@ -554,6 +641,13 @@
+                    normalized_game_root_path.c_str());
+ #endif
+     spdlog::default_logger()->flush();
++    struct OpeningGuard {
++      bool& flag;
++      explicit OpeningGuard(bool& value) : flag(value) { flag = true; }
++      ~OpeningGuard() { flag = false; }
++    } opening(impl->opening);
++    EngineLoop::CreateInstance();
++    TVPSetHostModalPump(PumpModalHost, impl);
+     Application->StartApplication(ttstr(normalized_game_root_path.c_str()));
+     spdlog::info("engine_open_game: StartApplication returned successfully");
+ #if defined(__ANDROID__)
+@@ -578,7 +672,6 @@
+     return ENGINE_RESULT_INVALID_STATE;
+   }
+ 
+-  EngineLoop::CreateInstance();
+   if (auto* loop = EngineLoop::GetInstance(); loop != nullptr) {
+     loop->Start();
+   }
+@@ -722,6 +815,21 @@
+   return ENGINE_RESULT_OK;
+ }
+ 
++int32_t engine_set_host_callbacks(engine_handle_t handle,
++                                  const engine_host_callbacks_t* callbacks) {
++  if (callbacks && callbacks->struct_size < sizeof(engine_host_callbacks_t))
++    return ENGINE_RESULT_INVALID_ARGUMENT;
++  std::lock_guard<std::recursive_mutex> registry_guard(g_registry_mutex);
++  engine_handle_s* impl = nullptr;
++  auto result = ValidateHandleLocked(handle, &impl);
++  if (result != ENGINE_RESULT_OK) return result;
++  std::lock_guard<std::recursive_mutex> guard(impl->mutex);
++  result = ValidateHandleThreadLocked(impl);
++  if (result != ENGINE_RESULT_OK) return result;
++  impl->host_callbacks = callbacks ? *callbacks : engine_host_callbacks_t{};
++  return ENGINE_RESULT_OK;
++}
++
+ engine_result_t engine_destroy(engine_handle_t handle) {
+   if (handle == nullptr) {
+     SetThreadError(nullptr);
+@@ -768,6 +876,7 @@
+   }
+ 
+   if (owned_runtime) {
++    TVPSetHostModalPump(nullptr, nullptr);
+     try {
+       Application->OnDeactivate();
+     } catch (...) {
+@@ -777,11 +886,16 @@
+           queue.clear();
+         });
+ 
++    // Destroy script objects and registered workers while archive locks and
++    // graphics resources still exist, before shared-library static teardown.
++    TVPSystemUninit();
++
+     // Avoid triggering platform exit() path in the host process.
+     TVPTerminated = false;
+     TVPTerminateCode = 0;
+   }
+ 
++  TVPClearHostModalPump(impl);
+   delete impl;
+   SetThreadError(nullptr);
+   return ENGINE_RESULT_OK;
+@@ -1228,6 +1342,7 @@
+   if (::Application) {
+     ::Application->Run();
+   }
++  TVPComposeHostWindows();
+   ::TVPDrawSceneOnce(0);
+ 
+   // Process deferred texture deletions. iTVPTexture2D::Release() uses
+@@ -1245,49 +1360,7 @@
+         "runtime requested termination");
+   }
+ 
+-  // Mark that a frame was rendered this tick (for IOSurface mode notification)
+-  impl->frame.rendered_this_tick = true;
+-
+-  // In IOSurface mode, the engine renders directly to the shared IOSurface
+-  // via the FBO — no need for glReadPixels. Skip the expensive readback.
+-  if (impl->render.native_window_attached) {
+-    // Android WindowSurface mode — TVPForceSwapBuffer() (called by
+-    // TVPDrawSceneOnce above) already performed eglSwapBuffers to deliver
+-    // the frame to Flutter's SurfaceTexture. Just update frame tracking.
+-    impl->frame.serial += 1;
+-    impl->frame.ready = true;
+-  } else if (!impl->render.iosurface_attached) {
+-    // Legacy Pbuffer readback path (slow, for backward compatibility)
+-    const FrameReadbackLayout layout = GetFrameReadbackLayoutLocked(impl);
+-    const size_t required_size =
+-        static_cast<size_t>(layout.stride_bytes) *
+-        static_cast<size_t>(layout.height);
+-    if (impl->frame.rgba.size() != required_size) {
+-      impl->frame.rgba.assign(required_size, 0);
+-    }
+-
+-    if (required_size > 0 &&
+-        ReadCurrentFrameRgba(layout, impl->frame.rgba.data())) {
+-      impl->frame.width = layout.width;
+-      impl->frame.height = layout.height;
+-      impl->frame.stride_bytes = layout.stride_bytes;
+-      impl->frame.ready = true;
+-      impl->frame.serial += 1;
+-    } else if (!impl->frame.ready && required_size > 0) {
+-      std::fill(impl->frame.rgba.begin(), impl->frame.rgba.end(), 0);
+-      impl->frame.width = layout.width;
+-      impl->frame.height = layout.height;
+-      impl->frame.stride_bytes = layout.stride_bytes;
+-      impl->frame.ready = true;
+-      impl->frame.serial += 1;
+-    }
+-  } else {
+-    // IOSurface mode — just increment frame serial, no readback needed.
+-    // The render output is already in the shared IOSurface.
+-    glFlush(); // Ensure GPU commands are submitted
+-    impl->frame.serial += 1;
+-    impl->frame.ready = true;
+-  }
++  CaptureFrameLocked(impl);
+ 
+   ClearHandleErrorLocked(impl);
+   SetThreadError(nullptr);
+@@ -1783,7 +1856,7 @@
+     return SetHandleErrorAndReturnLocked(impl, ENGINE_RESULT_INVALID_STATE,
+                                          "engine is paused");
+   }
+-  if (impl->state != ToStateValue(EngineState::kOpened)) {
++  if (impl->state != ToStateValue(EngineState::kOpened) && !impl->opening) {
+     return SetHandleErrorAndReturnLocked(
+         impl,
+         ENGINE_RESULT_INVALID_STATE,
+--- a/bridge/engine_api/include/engine_api.h
++++ b/bridge/engine_api/include/engine_api.h
+@@ -32,6 +32,18 @@
+    ((uint32_t)(patch)&0xFFFFu))
+ 
+ typedef struct engine_handle_s* engine_handle_t;
++
++typedef struct engine_host_callbacks_t {
++  uint32_t struct_size;
++  int32_t (*pump_events)(void* user_data);
++  void (*present_frame)(void* user_data, const uint8_t* rgba,
++                        uint32_t width, uint32_t height, uint32_t stride_bytes);
++  void* user_data;
++} engine_host_callbacks_t;
++
++/* Same-thread callbacks; they must not destroy or change the engine lifecycle. */
++ENGINE_API_EXPORT int32_t engine_set_host_callbacks(
++    engine_handle_t handle, const engine_host_callbacks_t* callbacks);
+ 
+ typedef enum engine_result_t {
+   ENGINE_RESULT_OK = 0,
+--- a/cpp/core/environ/Application.cpp
++++ b/cpp/core/environ/Application.cpp
+@@ -1,3 +1,4 @@
++#include <spdlog/spdlog.h>
+ #include "tjsCommHead.h"
+ 
+ #include <algorithm>
+@@ -506,6 +507,8 @@
+ }
+ #endif
+ void tTVPApplication::ShowException(const ttstr &e) {
++    tTJSNarrowStringHolder message(e.c_str());
++    spdlog::error("Runtime exception: {}", static_cast<const char*>(message));
+     TVPShowSimpleMessageBox(e, TVPGetErrorDialogTitle());
+     TVPSystemUninit();
+     TVPExitApplication(0);
+--- /dev/null
++++ b/cpp/core/environ/HostWindow.h
+@@ -0,0 +1,8 @@
++// Host-owned pumping keeps synchronous TJS modal calls on the engine thread.
++#pragma once
++class tTJSNI_Window;
++using TVPHostModalPump = bool (*)(void*);
++void TVPSetHostModalPump(TVPHostModalPump pump, void* context);
++void TVPClearHostModalPump(void* context);
++tTJSNI_Window* TVPGetHostInputWindow();
++void TVPComposeHostWindows();

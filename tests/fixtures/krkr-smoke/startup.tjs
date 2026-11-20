@@ -1,0 +1,38 @@
+// Self-authored structured-save, animation, audio and input probe.
+Plugins.link("saveStruct.dll");
+var state;
+if (Storages.isExistentStorage("load.request")) {
+    state = Dictionary.loadStruct("savedata/probe.ksd");
+} else {
+    state = %["score" => 4242, "name" => "串流测试", "enabled" => true];
+    (Dictionary.saveStruct incontextof state)("savedata/probe.ksd", "b");
+}
+global.win = new Window();
+win.caption = "Krkr Stream Probe";
+win.setSize(640, 480);
+global.root = new Layer(win, null);
+root.setSize(640, 480);
+root.setImageSize(640, 480);
+root.fillRect(0, 0, 640, 480, (state.score == 4242 && state.name == "串流测试" && state.enabled) ? 0xff00aa00 : 0xffcc0000);
+root.visible = true;
+win.visible = true;
+global.events = new Array();
+root.onMouseDown = function(x, y, button, shift) {
+    events.add("click:" + x + "," + y);
+    events.save("input.txt", "utf-8");
+};
+win.onKeyDown = function(key, shift) {
+    events.add("key:" + key);
+    events.save("input.txt", "utf-8");
+};
+global.sound = new WaveSoundBuffer(win);
+sound.open("tone.wav");
+sound.looping = true;
+sound.play();
+global.frame = 0;
+global.beat = new Timer(function() {
+    frame++;
+    root.fillRect(0, 0, 32, 32, frame % 2 ? 0xff0000ff : 0xffffff00);
+}, "");
+beat.interval = 150;
+beat.enabled = true;

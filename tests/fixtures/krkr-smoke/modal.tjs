@@ -1,0 +1,65 @@
+// Self-authored modal contract: wait, route Layer actions, then read the result.
+class ModalButton extends Layer {
+    function ModalButton(win, parent, x) {
+        super.Layer(win, parent);
+        setSize(100, 80);
+        setImageSize(100, 80);
+        fillRect(0, 0, 100, 80, 0xff00aa00);
+        setPos(x, 40);
+        hitThreshold = 0;
+        visible = true;
+    }
+    function onClick(x, y) { super.onClick(x, y); }
+}
+class Confirmation extends Window {
+    var result = false;
+    var body;
+    var yes;
+    var no;
+    function Confirmation() {
+        super.Window();
+        setPos(160, 120);
+        setInnerSize(320, 160);
+        body = new Layer(this, null);
+        body.setSize(320, 160);
+        body.setImageSize(320, 160);
+        body.fillRect(0, 0, 320, 160, 0xff0000ff);
+        body.visible = true;
+        add(body);
+        yes = new global.ModalButton(this, body, 20);
+        no = new global.ModalButton(this, body, 200);
+        add(yes);
+        add(no);
+    }
+    function action(ev) {
+        if (ev.type != "onClick") return;
+        if (ev.target == yes) { result = true; close(); }
+        else if (ev.target == no) { result = false; close(); }
+    }
+}
+class ProbeWindow extends Window {
+    var body;
+    function ProbeWindow() {
+        super.Window();
+        caption = "Modal Stream Probe";
+        setInnerSize(640, 480);
+        body = new Layer(this, null);
+        body.setSize(640, 480);
+        body.setImageSize(640, 480);
+        body.fillRect(0, 0, 640, 480, 0xff202020);
+        body.visible = true;
+        add(body);
+        visible = true;
+    }
+    function onKeyDown(key, shift) {
+        if (key != 77) return;
+        var dialog = new global.Confirmation();
+        dialog.showModal();
+        var accepted = dialog.result;
+        invalidate dialog;
+        var result = [accepted ? "yes" : "no"];
+        result.save("result.txt", "utf-8");
+        body.fillRect(0, 0, 640, 480, accepted ? 0xff00aa00 : 0xffaa0000);
+    }
+}
+global.main = new global.ProbeWindow();

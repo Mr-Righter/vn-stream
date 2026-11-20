@@ -1,0 +1,46 @@
+diff --git a/src/onscripter/ONScripter_image.cpp b/src/onscripter/ONScripter_image.cpp
+index cf663b3..e5b60e1 100644
+--- a/src/onscripter/ONScripter_image.cpp
++++ b/src/onscripter/ONScripter_image.cpp
+@@ -394,7 +394,7 @@ static void alphaBlend32(Uint32 *src1_buffer,
+                          Uint32 mask_surface_w,
+                          int rect_x,
+                          int rect_w) {
+-    int j2 = rect_x;
++    int j2 = rect_x % mask_surface_w;
+ #ifdef USE_SIMD
+     using namespace simd;
+ #ifdef USE_SIMD_X86_AVX2
+@@ -426,12 +426,12 @@ static void alphaBlend32(Uint32 *src1_buffer,
+         }
+         uint8x16 vec = uint8x16((Uint8)mask2i);
+         store_u_32(mask2 + i, vec);
+-        j2 = j2 >= mask_surface_w ? 0 : j2 + 1;
++        j2 = (j2 + 1) % mask_surface_w;
+     }
+     Uint32 *mask2p = mask2;
+ #ifdef USE_SIMD_X86_AVX2
+     while (rect_w >= 8) {
+-        uint8x32 maskv = load256_a(mask2p);
++        uint8x32 maskv = load256_u(mask2p);
+         uint16x16 m_lo = widen_lo(maskv, zero);
+         uint16x16 m_hi = widen_hi(maskv, zero);
+         alphaBlend8Core32(
+@@ -444,7 +444,7 @@ static void alphaBlend32(Uint32 *src1_buffer,
+     }
+ #endif
+     while (rect_w >= 4) {
+-        uint8x16 maskv = load_a(mask2p);
++        uint8x16 maskv = load_u(mask2p);
+         uint16x8 m_lo = widen_lo(maskv, zerol);
+         uint16x8 m_hi = widen_hi(maskv, zerol);
+         alphaBlendCore32(
+@@ -477,7 +477,7 @@ static void alphaBlend32(Uint32 *src1_buffer,
+         src1_buffer++;
+         src2_buffer++;
+         dst_buffer++;
+-        j2 = j2 >= mask_surface_w ? 0 : j2 + 1;
++        j2 = (j2 + 1) % mask_surface_w;
+     }
+ #endif
+ }

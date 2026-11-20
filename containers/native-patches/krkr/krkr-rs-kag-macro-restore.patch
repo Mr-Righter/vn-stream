@@ -1,0 +1,429 @@
+diff --git a/crates/compat/src/natives/kag/mod.rs b/crates/compat/src/natives/kag/mod.rs
+--- a/crates/compat/src/natives/kag/mod.rs
++++ b/crates/compat/src/natives/kag/mod.rs
+@@ -1170,9 +1170,8 @@
+ 
+ /// `restore(dict)` — restore from a `store()` dictionary (reference
+ /// `tTJSNI_KAGParser::Restore(iTJSDispatch2*)`, `KAGParser.cpp:723-906`).
+-/// The argument must be an **object**, raising on a non-object argument; our
+-/// own snapshots are read through the `data` member, and dictionary-shaped
+-/// saves are imported through [`dict_to_entries`].
++/// The argument must be an object. The public macro field governs replacement
++/// for both dictionary saves and snapshots with private walk metadata.
+ extern "C" fn native_restore(
+     engine: *mut c_void,
+     instance: *mut c_void,
+@@ -1205,29 +1204,44 @@
+         Ok(env) => env,
+         Err(e) => return report_error(out_error, &e),
+     };
+-    let state = state_of(instance);
+-    match host.member(object.raw_id(), "data") {
+-        // The emulator's own snapshot; `restore_decoded` applies the save
+-        // fields and rewinds to `curLabel`.
+-        Ok(TjsValue::String(snapshot)) => match state.restore(&snapshot, &mut env.environ()) {
+-            Ok(()) => {
+-                set_void(out);
+-                0
+-            }
+-            Err(e) => report_error(out_error, &e),
+-        },
+-        // A reference-format dictionary (or anything else): import it.
+-        _ => match dict_to_entries(host, object.raw_id()) {
+-            Ok(entries) => match state.restore_decoded(entries, &mut env.environ()) {
+-                Ok(()) => {
+-                    set_void(out);
+-                    0
+-                }
+-                Err(e) => report_error(out_error, &e),
+-            },
+-            Err(e) => report_error(out_error, &e),
+-        },
+-    }
++    let entries = match host.member(object.raw_id(), "data") {
++        Ok(TjsValue::String(snapshot)) => {
++            let mut entries = kvp::decode_dict(&snapshot);
++            // Public macro policy takes precedence over cached walk metadata.
++            entries.retain(|(key, _)| key != "macrosCount" && !key.starts_with("macros."));
++            append_saved_macros(host, object.raw_id(), &mut entries).map(|()| entries)
++        }
++        _ => dict_to_entries(host, object.raw_id()),
++    };
++    match entries
++        .and_then(|entries| state_of(instance).restore_decoded(entries, &mut env.environ()))
++    {
++        Ok(()) => {
++            set_void(out);
++            0
++        }
++        Err(error) => report_error(out_error, &error),
++    }
++}
++
++/// Import an explicitly saved macro table; missing or void preserves live macros.
++fn append_saved_macros(
++    host: &Tjs2Engine,
++    dict: Tjs2ValueId,
++    entries: &mut Vec<(String, String)>,
++) -> Result<(), String> {
++    let macros = match host.member_read(dict, "macros")? {
++        tjs::MemberRead::Void => return Ok(()),
++        tjs::MemberRead::Object(macros) => macros,
++        _ => return Err("KAGParser.restore: macros must be an object or void".to_owned()),
++    };
++    let names = host.enum_members(macros.raw_id())?;
++    entries.push(("macrosCount".to_owned(), names.len().to_string()));
++    for name in names {
++        let body = scalar_member(host, macros.raw_id(), &name).unwrap_or_default();
++        entries.push((format!("macros.{}", kvp::escape_field(&name)), body));
++    }
++    Ok(())
+ }
+ 
+ /// Convert a reference-format save dictionary into the emulator's ordered
+@@ -1290,16 +1304,7 @@
+         drop(levels);
+     }
+ 
+-    // `macros` (`KAGParser.cpp:727-735`).
+-    if let Some(macros) = retain_object_member(host, dict, "macros") {
+-        let names = host.enum_members(macros.raw_id())?;
+-        entries.push(("macrosCount".to_string(), names.len().to_string()));
+-        for name in &names {
+-            let body = scalar_member(host, macros.raw_id(), name).unwrap_or_default();
+-            entries.push((format!("macros.{}", kvp::escape_field(name)), body));
+-        }
+-        drop(macros);
+-    }
++    append_saved_macros(host, dict, &mut entries)?;
+ 
+     // `callStack` (`KAGParser.cpp:774-855`): map the reference entry keys
+     // onto the emulator's (`orgLineStr` → `orgSig`, `pos` → `curPos`,
+diff --git a/crates/compat/src/natives/kag/state.rs b/crates/compat/src/natives/kag/state.rs
+--- a/crates/compat/src/natives/kag/state.rs
++++ b/crates/compat/src/natives/kag/state.rs
+@@ -1743,13 +1743,12 @@
+ 
+     /// Restore state from a [`Self::store`] string (the reference
+     /// `Restore`). Re-loads the scenario from storage like the reference.
++    #[cfg(test)]
+     pub fn restore(&mut self, s: &str, env: &mut Environ<'_>) -> Result<(), String> {
+         self.restore_decoded(kvp::decode_dict(s), env)
+     }
+ 
+-    /// The body of [`Self::restore`] over already-decoded ordered entries;
+-    /// the native `restore(dict)` uses this with entries converted from a
+-    /// reference-format dictionary (`KAGParser.cpp:723-...`).
++    /// Restore decoded walk entries and any explicitly supplied macro table.
+     pub fn restore_decoded(
+         &mut self,
+         entries: Vec<(String, String)>,
+@@ -1830,9 +1829,9 @@
+             self.macro_args_base = v as usize;
+         }
+ 
+-        // macros
+-        self.macros.clear();
++        // An omitted macro table preserves the destination's startup definitions.
+         if let Some(n) = get_int("macrosCount") {
++            self.macros.clear();
+             let n = n as usize;
+             for (k, v) in &entries {
+                 if let Some(name) = k.strip_prefix("macros.") {
+@@ -2721,7 +2720,9 @@
+             ("macrosCount".to_string(), "2".to_string()),
+             ("macros.foo".to_string(), "body".to_string()),
+         ];
+-        let error = state.restore_decoded(entries, &mut env).unwrap_err();
++        let error = state
++            .restore(&super::kvp::encode_dict(&entries), &mut env)
++            .unwrap_err();
+         assert!(error.contains("macrosCount"), "{error}");
+     }
+ }
+diff --git a/crates/compat/tests/kag_restore_macros.rs b/crates/compat/tests/kag_restore_macros.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/compat/tests/kag_restore_macros.rs
+@@ -0,0 +1,159 @@
++//! Saved macro policy follows the public dictionary, not private walk metadata.
++//! reference/cpp/core/kag/KAGParser.cpp:727-735
++
++mod common;
++
++use common::{Env, vm_lock};
++
++fn startup_parser() -> Env {
++    let env = Env::with_storage();
++    std::fs::write(
++        env.game_dir()
++            .expect("mounted game directory")
++            .join("resume.ks"),
++        b"*start\n[np]\n",
++    )
++    .expect("write self-authored scenario");
++    env.run(
++        r#"
++        var parser=new KAGParser();
++        parser.macros.np='[ch text="startup"]';
++        parser.loadScenario('resume.ks');
++        parser.getNextTag();
++        var saved=parser.store();
++        function readText() {
++            var text='';
++            while(true) {
++                var tag=parser.getNextTag();
++                if(!tag) break;
++                if(tag.tagname==='ch') text+=tag.text;
++            }
++            return text;
++        }
++        "#,
++    );
++    env
++}
++
++#[test]
++fn reference_save_with_void_macros_preserves_startup_macros() {
++    let _lock = vm_lock();
++    let env = startup_parser();
++    env.run("delete saved.data; saved.macros=void; parser.restore(saved); var text=readText();");
++    assert_eq!(env.eval_int("text==='startup'"), 1);
++}
++
++#[test]
++fn reference_save_without_macros_preserves_startup_macros() {
++    let _lock = vm_lock();
++    let env = startup_parser();
++    env.run("delete saved.data; delete saved.macros; parser.restore(saved); var text=readText();");
++    assert_eq!(env.eval_int("text==='startup'"), 1);
++}
++
++#[test]
++fn explicit_empty_macro_dictionary_erases_startup_macros() {
++    let _lock = vm_lock();
++    let env = startup_parser();
++    env.run("delete saved.data; saved.macros=%[]; parser.restore(saved); var tag=parser.getNextTag(); while(tag && tag.tagname!=='np') tag=parser.getNextTag();");
++    assert_eq!(env.eval_int("parser.macros.np===void"), 1);
++    assert_eq!(env.eval_int("tag && tag.tagname==='np'"), 1);
++}
++
++#[test]
++fn private_empty_snapshot_does_not_override_void_macro_policy() {
++    let _lock = vm_lock();
++    let env = startup_parser();
++    env.run(
++        "var empty=new KAGParser(); empty.loadScenario('resume.ks'); saved.data=empty.store().data; saved.macros=void; parser.restore(saved); var text=readText();",
++    );
++    assert_eq!(env.eval_int("text==='startup'"), 1);
++}
++
++#[test]
++fn public_macro_dictionary_overrides_the_private_snapshot() {
++    let _lock = vm_lock();
++    let env = startup_parser();
++    env.run(
++        r#"saved.macros=%[np:'[ch text="replacement"]']; parser.restore(saved); var text=readText();"#,
++    );
++    assert_eq!(env.eval_int("text==='replacement'"), 1);
++}
++
++#[test]
++fn public_empty_macro_dictionary_overrides_the_private_snapshot() {
++    let _lock = vm_lock();
++    let env = startup_parser();
++    env.run("saved.macros=%[]; parser.restore(saved);");
++    assert_eq!(env.eval_int("parser.macros.np===void"), 1);
++}
++
++fn invalid_macro_error(private_snapshot: bool, literal: &str) {
++    let env = startup_parser();
++    if !private_snapshot {
++        env.run("delete saved.data;");
++    }
++    env.run(&format!("saved.macros={literal};"));
++    let error = env.error("parser.restore(saved)");
++    assert!(!error.is_empty(), "a non-object macro table must raise");
++}
++
++#[test]
++fn reference_save_rejects_a_scalar_macro_table() {
++    let _lock = vm_lock();
++    invalid_macro_error(false, "42");
++}
++
++#[test]
++fn private_snapshot_rejects_a_scalar_macro_table() {
++    let _lock = vm_lock();
++    invalid_macro_error(true, "42");
++}
++
++fn macro_getter_error(private_snapshot: bool) {
++    let env = startup_parser();
++    env.run(
++        r#"
++        class BrokenSave {
++            var data;
++            function BrokenSave(snapshot) { data=snapshot; }
++            property macros {
++                getter() { throw %[message:'macro lookup failed']; }
++            }
++        }
++        var broken=new BrokenSave(saved.data);
++        "#,
++    );
++    if !private_snapshot {
++        env.run("broken.data=void;");
++    }
++    let error = env.error("parser.restore(broken)");
++    assert!(
++        error.contains("macro lookup failed"),
++        "getter error: {error:?}"
++    );
++}
++
++#[test]
++fn reference_save_propagates_a_macro_getter_exception() {
++    let _lock = vm_lock();
++    macro_getter_error(false);
++}
++
++#[test]
++fn private_snapshot_propagates_a_macro_getter_exception() {
++    let _lock = vm_lock();
++    macro_getter_error(true);
++}
++
++#[test]
++fn reference_save_rejects_a_null_macro_table() {
++    let _lock = vm_lock();
++    invalid_macro_error(false, "null");
++}
++
++#[test]
++fn private_snapshot_rejects_a_null_macro_table() {
++    let _lock = vm_lock();
++    invalid_macro_error(true, "null");
++}
+diff --git a/crates/tjs/src/lib.rs b/crates/tjs/src/lib.rs
+--- a/crates/tjs/src/lib.rs
++++ b/crates/tjs/src/lib.rs
+@@ -912,8 +912,10 @@
+ /// that has to tell them apart reads through
+ /// [`Tjs2Engine::member_read`].
+ pub enum MemberRead {
+-    /// The member is absent, `void`, or `null`.
++    /// The member is absent or holds `void`.
+     Void,
++    /// The member holds `null`, a present value with no object receiver.
++    Null,
+     /// The member holds an object; the handle is released when the read is
+     /// dropped.
+     Object(DetachedValue),
+@@ -927,6 +929,7 @@
+     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+         match self {
+             Self::Void => f.write_str("Void"),
++            Self::Null => f.write_str("Null"),
+             Self::Object(_) => f.write_str("Object"),
+             Self::Octet(bytes) => write!(f, "Octet({bytes:?})"),
+             Self::Scalar(value) => write!(f, "Scalar({value:?})"),
+@@ -2559,7 +2562,8 @@
+             Err(error) => return Err(error),
+         };
+         match raw.ty {
+-            VAL_VOID | VAL_NULL => Ok(MemberRead::Void),
++            VAL_VOID => Ok(MemberRead::Void),
++            VAL_NULL => Ok(MemberRead::Null),
+             VAL_OBJECT => {
+                 // The VM keeps the object it produced in the engine's
+                 // most-recent-object slot, and the retention resolves
+diff --git a/crates/tjs/tests/member_read.rs b/crates/tjs/tests/member_read.rs
+--- a/crates/tjs/tests/member_read.rs
++++ b/crates/tjs/tests/member_read.rs
+@@ -300,3 +300,20 @@
+         "a null retained id must be rejected"
+     );
+ }
++
++/// Null is a present value; it must not be mistaken for an omitted save field.
++#[test]
++fn null_and_void_members_have_distinct_shapes() {
++    let _lock = vm_lock();
++    let engine = Tjs2Engine::new().unwrap();
++    let object = retained_object(&engine, "%[ nullValue:null, voidValue:void ]");
++    let null = engine.member_read(object.raw_id(), "nullValue").unwrap();
++    assert_eq!(format!("{null:?}"), "Null");
++    let void = engine.member_read(object.raw_id(), "voidValue").unwrap();
++    assert!(matches!(void, MemberRead::Void), "void member: {void:?}");
++    let missing = engine.member_read(object.raw_id(), "absentValue").unwrap();
++    assert!(
++        matches!(missing, MemberRead::Void),
++        "absent member: {missing:?}"
++    );
++}
+diff --git a/crates/compat/examples/psb_corpus.rs b/crates/compat/examples/psb_corpus.rs
+--- a/crates/compat/examples/psb_corpus.rs
++++ b/crates/compat/examples/psb_corpus.rs
+@@ -279,6 +279,7 @@
+         .map_err(|error| format!("the member {member} cannot be read: {error}"))?
+     {
+         MemberRead::Void => out.push_str("void"),
++        MemberRead::Null => out.push_str("null"),
+         MemberRead::Scalar(TjsValue::Void) => out.push_str("void"),
+         MemberRead::Scalar(TjsValue::Integer(value)) => {
+             let _ = write!(out, "{value}");
+diff --git a/crates/compat/src/natives/visual/layer/events.rs b/crates/compat/src/natives/visual/layer/events.rs
+--- a/crates/compat/src/natives/visual/layer/events.rs
++++ b/crates/compat/src/natives/visual/layer/events.rs
+@@ -51,7 +51,7 @@
+         set_argument(host, event.raw_id(), member, argument)?;
+     }
+     match host.member_read(owner.raw_id(), "action")? {
+-        tjs::MemberRead::Void => {}
++        tjs::MemberRead::Void | tjs::MemberRead::Null => {}
+         tjs::MemberRead::Object(action) => {
+             host.call_detached(
+                 &action,
+diff --git a/crates/compat/tests/layer_action_owner.rs b/crates/compat/tests/layer_action_owner.rs
+--- a/crates/compat/tests/layer_action_owner.rs
++++ b/crates/compat/tests/layer_action_owner.rs
+@@ -185,3 +185,11 @@
+     assert_eq!(env.eval_int("blur"), 1);
+     assert_eq!(env.eval_int("before"), 1);
+ }
++
++#[test]
++fn null_action_member_keeps_the_default_event_a_noop() {
++    let _lock = vm_lock();
++    let env = Env::new();
++    env.run("var owner=new Window(); var button=new Layer(owner,null); owner.action=null; button.onClick(1,2); var completed=true;");
++    assert_eq!(env.eval_int("completed"), 1);
++}
+diff --git a/scripts/allowlists/house_style_baseline.txt b/scripts/allowlists/house_style_baseline.txt
+--- a/scripts/allowlists/house_style_baseline.txt
++++ b/scripts/allowlists/house_style_baseline.txt
+@@ -361,7 +361,6 @@
+ {"path": "crates/compat/src/natives/input.rs", "rule": "reference-citation", "anchor": "/// the reference uses as a query pseudo-code (`VK_PADANY`) or a mouse button.", "reason": "legacy comment, cleanup tracked in TODO §15"}
+ {"path": "crates/compat/src/natives/kag/mod.rs", "rule": "reference-citation", "anchor": "// (`KAGParser.cpp:1163-1170`).", "reason": "legacy comment, cleanup tracked in TODO §15"}
+ {"path": "crates/compat/src/natives/kag/mod.rs", "rule": "reference-citation", "anchor": "// (`KAGParser.cpp:59-60`).", "reason": "legacy comment, cleanup tracked in TODO §15"}
+-{"path": "crates/compat/src/natives/kag/mod.rs", "rule": "reference-citation", "anchor": "// A reference-format dictionary (or anything else): import it.", "reason": "legacy comment, cleanup tracked in TODO §15"}
+ {"path": "crates/compat/src/natives/kag/mod.rs", "rule": "reference-citation", "anchor": "// Reference top-level members (`KAGParser.cpp:616-634` and the cur*", "reason": "legacy comment, cleanup tracked in TODO §15"}
+ {"path": "crates/compat/src/natives/kag/mod.rs", "rule": "reference-citation", "anchor": "// The C++ conversion consumes the id; forgetting the wrapper avoids a", "reason": "legacy comment, cleanup tracked in TODO §15"}
+ {"path": "crates/compat/src/natives/kag/mod.rs", "rule": "reference-citation", "anchor": "// The bare reference `TVPKAGSpecifyKAGParser` text", "reason": "legacy comment, cleanup tracked in TODO §15"}
+@@ -372,7 +371,6 @@
+ {"path": "crates/compat/src/natives/kag/mod.rs", "rule": "reference-citation", "anchor": "// `callStack`: an array of dictionaries (`KAGParser.cpp:546-634`).", "reason": "legacy comment, cleanup tracked in TODO §15"}
+ {"path": "crates/compat/src/natives/kag/mod.rs", "rule": "reference-citation", "anchor": "// `macroArgs` (`KAGParser.cpp:740-769`), including the reference's", "reason": "legacy comment, cleanup tracked in TODO §15"}
+ {"path": "crates/compat/src/natives/kag/mod.rs", "rule": "reference-citation", "anchor": "// `macroArgs`: an array of dictionaries (`KAGParser.cpp:521-544`).", "reason": "legacy comment, cleanup tracked in TODO §15"}
+-{"path": "crates/compat/src/natives/kag/mod.rs", "rule": "reference-citation", "anchor": "// `macros` (`KAGParser.cpp:727-735`).", "reason": "legacy comment, cleanup tracked in TODO §15"}
+ {"path": "crates/compat/src/natives/kag/mod.rs", "rule": "reference-citation", "anchor": "// `macros` dictionary (`KAGParser.cpp:506-520`).", "reason": "legacy comment, cleanup tracked in TODO §15"}
+ {"path": "crates/compat/src/natives/kag/mod.rs", "rule": "reference-citation", "anchor": "// handler raises is ignored, matching the reference.", "reason": "legacy comment, cleanup tracked in TODO §15"}
+ {"path": "crates/compat/src/natives/kag/mod.rs", "rule": "reference-citation", "anchor": "// reals and raises on objects (`tjsVariant.h:933-935`).", "reason": "legacy comment, cleanup tracked in TODO §15"}
+@@ -577,7 +575,6 @@
+ {"path": "crates/compat/src/natives/kag/state.rs", "rule": "reference-citation", "anchor": "/// reference `operator bool` (`Object != nullptr`, so TJS `null` is", "reason": "legacy comment, cleanup tracked in TODO §15"}
+ {"path": "crates/compat/src/natives/kag/state.rs", "rule": "reference-citation", "anchor": "/// reference keeps one dictionary that scripts and `@macro`/`@erasemacro`", "reason": "legacy comment, cleanup tracked in TODO §15"}
+ {"path": "crates/compat/src/natives/kag/state.rs", "rule": "reference-citation", "anchor": "/// reference splices the raw text into the current line buffer, where", "reason": "legacy comment, cleanup tracked in TODO §15"}
+-{"path": "crates/compat/src/natives/kag/state.rs", "rule": "reference-citation", "anchor": "/// reference-format dictionary (`KAGParser.cpp:723-...`).", "reason": "legacy comment, cleanup tracked in TODO §15"}
+ {"path": "crates/compat/src/natives/kag/state.rs", "rule": "reference-citation", "anchor": "/// returns void). This is `_GetNextTag` ported onto parsed events.", "reason": "legacy comment, cleanup tracked in TODO §15"}
+ {"path": "crates/compat/src/natives/kag/state.rs", "rule": "reference-citation", "anchor": "/// scenario text when the handler returns a string (`KAGParser.cpp:919-937`).", "reason": "legacy comment, cleanup tracked in TODO §15"}
+ {"path": "crates/compat/src/natives/kag/state.rs", "rule": "reference-citation", "anchor": "/// share, `KAGParser.cpp:2471-2481`).", "reason": "legacy comment, cleanup tracked in TODO §15"}

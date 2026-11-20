@@ -1,0 +1,2850 @@
+diff --git a/Cargo.lock b/Cargo.lock
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -590,6 +590,19 @@
+ ]
+ 
+ [[package]]
++name = "corosensei"
++version = "0.3.4"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "6886a0c0f263965933c438626e7179139a62b978a33aa18281cbf0cd5a975f34"
++dependencies = [
++ "autocfg",
++ "cfg-if",
++ "libc",
++ "scopeguard",
++ "windows-sys 0.59.0",
++]
++
++[[package]]
+ name = "cosmic-text"
+ version = "0.19.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+@@ -2024,6 +2037,7 @@
+ version = "1.0.0"
+ dependencies = [
+  "api",
++ "corosensei",
+  "cpal",
+  "log",
+  "ndk",
+diff --git a/crates/app/src/game.rs b/crates/app/src/game.rs
+--- a/crates/app/src/game.rs
++++ b/crates/app/src/game.rs
+@@ -10,7 +10,9 @@
+ //! game [`Storage`] and the ordered frame body, which it runs inside the
+ //! engine's frame hook.
+ 
++use std::cell::Cell;
+ use std::path::{Path, PathBuf};
++use std::rc::Rc;
+ use std::time::{Duration, Instant};
+ 
+ use api::error::FsError;
+@@ -24,7 +26,7 @@
+ use engine::{FrameTimeSource, GameFrame, PixelTranslation, Storage};
+ use fs::{FileSystem, list};
+ use platform::{FramePacing, PlatformError, PlatformEvent};
+-use vm::{FrameCtx, VmHost};
++use vm::{FrameRunner, VmHost};
+ 
+ use crate::audio::AudioOutput;
+ use crate::startup::{StartupSnapshot, StartupStats};
+@@ -178,10 +180,21 @@
+     /// The most playback one frame may advance, in milliseconds: the audio
+     /// pump's playback cap, forwarded to the movie steps.
+     max_step_ms: f64,
++    /// Latest finished invocation's measurements, shared without borrowing
++    /// the suspended script frame.
++    report: Option<Rc<Cell<(FramePhases, TickPhases)>>>,
+     /// Wall-clock cost of each poll in the current frame.
+     phases: FramePhases,
+     /// Wall-clock cost of the VM tick's non-poll segments.
+     tick: TickPhases,
++}
++
++impl Drop for Polls {
++    fn drop(&mut self) {
++        if let Some(report) = &self.report {
++            report.set((self.phases, self.tick));
++        }
++    }
+ }
+ 
+ impl FrameBody for Polls {
+@@ -787,16 +800,18 @@
+ /// A running game: the L4 VM host bound to the engine's scene and timer, and
+ /// the mounted game storage.
+ ///
+-/// Field order is load-bearing. `audio` is declared first so the L1 device is
+-/// stopped (its state drop stops the stream) **before** the VM dies; the VM
+-/// then holds raw pointers to the [`Storage`] and to the
++/// Field order is load-bearing. `frames` completes pending native calls
++/// first; `audio` then stops its device before the VM dies. The VM
++/// holds raw pointers to the [`Storage`] and to the
+ /// [`Scene`](engine::Scene), [`TimerState`] and [`InputState`] behind it, so
+ /// `vm` is declared before its targets, and the [`Host`] is boxed so its
+ /// address (and thus the engine's) is stable across the move into this
+ /// struct.
+ pub struct GameHost {
+-    /// Independent live producer or frame-driven headless output; dropped
+-    /// first, so the stream stops before the engine tears down.
++    /// Completes suspended native calls before their services are destroyed.
++    frames: FrameRunner,
++    /// Independent live producer or frame-driven headless output; stopped
++    /// after suspended calls complete and before the engine tears down.
+     audio: AudioOutput,
+     /// The L4 VM host, bound to `storage` and the engine services.
+     vm: VmHost,
+@@ -806,7 +821,7 @@
+     /// addresses the compatibility layer holds stay stable.
+     host: Box<Host>,
+     /// The ordered frame body.
+-    polls: Polls,
++    polls: Rc<Cell<(FramePhases, TickPhases)>>,
+     /// Wall-clock instant the open sequence started.
+     open_start: Instant,
+     /// The previous frame's measured attribution, reported when the next gap
+@@ -818,72 +833,13 @@
+     first_frame_logged: bool,
+ }
+ 
+-/// The engine's frame hook for a running game: the VM tick, the audio drain it
+-/// feeds, and the ordered polls.
+-///
+-/// [`Engine::run`](engine::Engine::run) calls it after firing the due timers
+-/// and before projecting and drawing, so the scene the VM left behind is the
+-/// one the frame presents.
+-struct VmHook<'a> {
+-    /// The VM host whose frame body runs.
+-    vm: &'a mut VmHost,
+-    /// Live audio health check, or deterministic headless mixer drain.
+-    audio: &'a mut AudioOutput,
+-    /// Platform events delivered to script this frame.
+-    events: &'a [PlatformEvent],
+-    /// The presentation the frame started with, which maps input positions
+-    /// from device pixels into VM pixels.
+-    translation: Option<PixelTranslation>,
+-    /// The ordered frame body and its per-frame cost record.
+-    polls: &'a mut Polls,
+-    /// Wall-clock cost of the whole hook, in milliseconds.
+-    hook_ms: f64,
+-    /// Wall-clock cost of the audio drain, in milliseconds.
+-    audio_ms: f64,
+-}
+-
+-impl GameFrame for VmHook<'_> {
+-    // The frame's clock and delta are L2's: the polls that need the time read
+-    // the attached clock, so this hook takes only the delta its audio pump
+-    // needs.
+-    fn before_render(&mut self, _now_ms: u64, dt_ms: f64) -> Result<(), String> {
+-        let hook_started = Instant::now();
+-        // Headless pictures follow simulated audio chunks. Live audio uses its
+-        // independent device clock, so pictures keep the full elapsed time.
+-        self.polls.max_step_ms = self.audio.max_chunk_ms();
+-        // Pointer and touch positions arrive in device pixels while the scene's
+-        // hit-testing is in VM pixels, so those events are mapped back before
+-        // the VM sees them. Without a mapping, or at an identity mapping, the
+-        // events pass through untouched.
+-        let translation = self
+-            .translation
+-            .filter(|translation| !translation.is_identity());
+-        let source = self.events;
+-        let translated = translation.map(|translation| {
+-            source
+-                .iter()
+-                .map(|event| translate_event(Some(translation), event))
+-                .collect::<Vec<PlatformEvent>>()
+-        });
+-        let events: &[PlatformEvent] = translated.as_deref().unwrap_or(source);
+-        let frame = FrameCtx {
+-            body: &mut *self.polls,
+-            events,
+-        };
+-        let vm_started = Instant::now();
+-        // The script compilation inside the tick: the VM's own totals before
+-        // and after it. The measurement is off unless the run asked for it.
+-        let before = compat::compile_stats_enabled().then(compat::compile_stats);
+-        self.vm.tick(frame).map_err(|error| error.to_string())?;
+-        self.polls.tick.tick_ms = vm_started.elapsed().as_secs_f64() * 1000.0;
+-        self.polls.tick.front_end =
+-            before.map(|before| front_end_between(&before, &compat::compile_stats()));
+-        let audio_started = Instant::now();
+-        self.audio
+-            .pump(self.vm, dt_ms)
+-            .map_err(|error| error.to_string())?;
+-        self.audio_ms = audio_started.elapsed().as_secs_f64() * 1000.0;
+-        self.hook_ms = hook_started.elapsed().as_secs_f64() * 1000.0;
++/// Finishes script-owned transitions after scene projection.
++struct ProjectionHook<'a> {
++    vm: &'a VmHost,
++}
++
++impl GameFrame for ProjectionHook<'_> {
++    fn before_render(&mut self, _now_ms: u64, _dt_ms: f64) -> Result<(), String> {
+         Ok(())
+     }
+ 
+@@ -1161,12 +1117,21 @@
+             mount_time,
+             startup_time,
+         );
++        let polls = Rc::new(Cell::new((FramePhases::default(), TickPhases::default())));
++        let measurements = Rc::clone(&polls);
++        let max_step_ms = audio.max_chunk_ms();
++        let frames = vm.frame_runner(move || Polls {
++            max_step_ms,
++            report: Some(Rc::clone(&measurements)),
++            ..Polls::default()
++        })?;
+         Ok(Self {
++            frames,
+             audio,
+             vm,
+             storage,
+             host,
+-            polls: Polls::default(),
++            polls,
+             open_start,
+             last_frame: FrameAttribution::default(),
+             reporting: SlowReporting::default(),
+@@ -1265,8 +1230,8 @@
+         // The gap spans the last frame; attribute it before the step overwrites
+         // the stored frame.
+         self.report_slow_frame(dt, pacing);
+-        self.polls.phases = FramePhases::default();
+-        self.polls.tick = TickPhases::default();
++        self.polls
++            .set((FramePhases::default(), TickPhases::default()));
+         // Input is mapped with the presentation captured as the frame starts;
+         // the engine refits after the hook, so a window size the VM changes
+         // during the hook applies to this frame's drawing and to the next
+@@ -1279,27 +1244,35 @@
+         let pool_before = self.host.engine().job_stats();
+ 
+         let step_started = Instant::now();
+-        let (report, hook_ms, audio_ms) = {
+-            let mut hook = VmHook {
+-                vm: &mut self.vm,
+-                audio: &mut self.audio,
+-                events,
+-                translation,
+-                polls: &mut self.polls,
+-                hook_ms: 0.0,
+-                audio_ms: 0.0,
+-            };
+-            let report = self.host.step_with_frame(clock, &mut hook)?;
+-            (report, hook.hook_ms, hook.audio_ms)
+-        };
++        let (_now_ms, dt_ms) = self.host.engine_mut().advance(clock);
++        let translated: Vec<_> = events
++            .iter()
++            .map(|event| translate_event(translation, event))
++            .collect();
++        let hook_started = Instant::now();
++        let before = compat::compile_stats_enabled().then(compat::compile_stats);
++        let vm_started = Instant::now();
++        self.frames.step(&translated)?;
++        let (phases, mut tick) = self.polls.get();
++        tick.tick_ms = vm_started.elapsed().as_secs_f64() * 1000.0;
++        tick.front_end = before.map(|before| front_end_between(&before, &compat::compile_stats()));
++        let audio_started = Instant::now();
++        self.audio.pump(&self.vm, dt_ms)?;
++        let audio_ms = audio_started.elapsed().as_secs_f64() * 1000.0;
++        let hook_ms = hook_started.elapsed().as_secs_f64() * 1000.0;
++        let report = self
++            .host
++            .engine_mut()
++            .present(&mut ProjectionHook { vm: &self.vm })
++            .map_err(HostError::from)?;
+         let total_ms = step_started.elapsed().as_secs_f64() * 1000.0;
+         // The engine frame's own cost: the whole step minus the upward hook it
+         // ran (the VM tick and the audio drain are attributed separately).
+         let host_ms = total_ms - hook_ms;
+ 
+         self.last_frame.record(
+-            self.polls.phases,
+-            self.polls.tick,
++            phases,
++            tick,
+             report,
+             self.host.last_frame_timings(),
+             PoolWork::between(pool_before, self.host.engine().job_stats()),
+diff --git a/crates/app/tests/modal_window.rs b/crates/app/tests/modal_window.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/app/tests/modal_window.rs
+@@ -0,0 +1,237 @@
++//! Modal windows retain their synchronous caller while host frames keep drawing.
++//!
++//! The modal form pumps drawing and input until its close result is set
++//! (`reference/cpp/core/environ/impl/TVPWindow.cpp:498-524,988-1000`).
++//! These fixtures contain no game assets and exercise that contract through
++//! the same host, script events, projection and CPU presentation as a game.
++
++use std::path::PathBuf;
++
++use app::{GameHost, Host, HostConfig, InjectedFrameTime};
++use platform::{InputEvent, MouseButton, PhysicalKey, PlatformEvent};
++use testkit::vm_lock;
++use tjs::TjsValue;
++
++const SCRIPT: &str = r#"
++var resumed = 0;
++var chosen = -1;
++var backgroundClicks = 0;
++var backgroundKeys = 0;
++var dialog = null;
++var mainWindow = new Window();
++mainWindow.setSize(320, 240);
++mainWindow.setPos(0, 0);
++mainWindow.visible = true;
++var background = new Layer(mainWindow, null);
++background.setSize(320, 240);
++background.setImageSize(320, 240);
++background.fillRect(0, 0, 320, 240, 0xff123456);
++background.visible = true;
++background.hitType = 0;
++background.hitThreshold = 0;
++background.focusable = true;
++mainWindow.focusedLayer = background;
++background.onMouseUp = function(x, y, button, shift) { backgroundClicks++; };
++background.onKeyDown = function(key, shift, process) { backgroundKeys++; };
++
++class DialogFace extends Layer {
++    var shell;
++    function DialogFace(win) {
++        super.Layer(win, null);
++        shell = win;
++        setSize(128, 80);
++        setImageSize(128, 80);
++        fillRect(0, 0, 128, 80, 0xffcc2200);
++        visible = true;
++        hitType = 0;
++        hitThreshold = 0;
++        focusable = true;
++    }
++    function onMouseUp(x, y, button, shift) {
++        if(button == 0) {
++            shell.result = x < 64;
++            shell.close();
++        }
++    }
++    function onKeyDown(key, shift, process) {
++        if(key == 13 || key == 27) {
++            shell.result = key == 13;
++            shell.close();
++        }
++    }
++}
++class DialogWindow extends Window {
++    var result = false;
++    var face;
++    function DialogWindow() {
++        super.Window();
++        setSize(128, 80);
++        setPos(96, 80);
++        visible = false;
++        face = new DialogFace(this);
++        add(face);
++        focusedLayer = face;
++    }
++}
++var opener = new Timer(function() {
++    opener.enabled = false;
++    dialog = new DialogWindow();
++    dialog.showModal();
++    chosen = dialog.result ? 1 : 0;
++    resumed++;
++    invalidate dialog;
++}, '');
++opener.interval = 10;
++opener.enabled = true;
++"#;
++
++struct Fixture {
++    game: GameHost,
++    directory: PathBuf,
++}
++
++impl Fixture {
++    fn open(tag: &str) -> Self {
++        let directory = std::env::temp_dir().join(format!(
++            "krkr-modal-{tag}-{}-{}",
++            std::process::id(),
++            std::time::SystemTime::now()
++                .duration_since(std::time::UNIX_EPOCH)
++                .expect("clock after epoch")
++                .as_nanos()
++        ));
++        std::fs::create_dir_all(&directory).expect("fixture directory");
++        std::fs::write(directory.join("startup.tjs"), SCRIPT).expect("fixture script");
++        let mut host =
++            Host::new(HostConfig::headless().with_cpu_presentation(true)).expect("headless host");
++        host.resize((320, 240)).expect("fixture surface");
++        let game = GameHost::open(host, Vec::new(), directory.clone()).expect("open fixture");
++        Self { game, directory }
++    }
++
++    fn frame(&mut self, events: &[PlatformEvent]) {
++        self.game
++            .step(&InjectedFrameTime::new(10.0), events)
++            .expect("modal frame");
++    }
++
++    fn integer(&self, expression: &str) -> i64 {
++        match self
++            .game
++            .vm()
++            .eval(expression, "modal-test")
++            .expect("read state")
++        {
++            TjsValue::Integer(value) => value,
++            other => panic!("expected integer for {expression}, got {other:?}"),
++        }
++    }
++
++    fn pixel(&self, x: usize, y: usize) -> [u8; 4] {
++        self.game
++            .host()
++            .with_presented_frame(|frame| {
++                let offset = (y * usize::try_from(frame.width).expect("frame width") + x) * 4;
++                frame.pixels[offset..offset + 4]
++                    .try_into()
++                    .expect("RGBA pixel")
++            })
++            .expect("host presented a frame")
++    }
++
++    fn click(&mut self, x: f32, y: f32) {
++        self.frame(&[PlatformEvent::Input(InputEvent::PointerMoved { x, y })]);
++        self.frame(&[PlatformEvent::Input(InputEvent::MouseButton {
++            button: MouseButton::Left,
++            pressed: true,
++        })]);
++        self.frame(&[PlatformEvent::Input(InputEvent::MouseButton {
++            button: MouseButton::Left,
++            pressed: false,
++        })]);
++        self.frame(&[]);
++    }
++}
++
++impl Drop for Fixture {
++    fn drop(&mut self) {
++        match std::fs::remove_dir_all(&self.directory) {
++            Ok(()) => {}
++            Err(error) => eprintln!("cannot clean modal fixture: {error}"),
++        }
++    }
++}
++
++#[test]
++fn modal_dialog_presents_before_the_caller_resumes() {
++    let _lock = vm_lock();
++    let mut fixture = Fixture::open("presentation");
++    fixture.frame(&[]);
++
++    // reference/cpp/core/environ/impl/TVPWindow.cpp:498-524: show/raise then
++    // keep the caller waiting while the form continues drawing and receiving input.
++    assert_eq!(fixture.integer("resumed"), 0);
++    assert_eq!(fixture.integer("chosen"), -1);
++    assert_eq!(fixture.game.scene().windows.len(), 2);
++    assert_eq!(fixture.pixel(10, 10), [0x12, 0x34, 0x56, 255]);
++    assert_eq!(fixture.pixel(112, 96), [0xcc, 0x22, 0x00, 255]);
++
++    fixture.frame(&[]);
++    // reference/cpp/core/environ/impl/TVPWindow.cpp:509-524: idle frames cannot
++    // finish the modal call or destroy the dialog before a close result exists.
++    assert_eq!(fixture.integer("resumed"), 0);
++    assert_eq!(fixture.pixel(112, 96), [0xcc, 0x22, 0x00, 255]);
++}
++
++#[test]
++fn pointer_yes_and_no_return_the_dialog_result_at_its_client_origin() {
++    let _lock = vm_lock();
++    for (name, x, expected) in [("yes", 112.0, 1), ("no", 192.0, 0)] {
++        let mut fixture = Fixture::open(name);
++        fixture.frame(&[]);
++        fixture.click(x, 96.0);
++
++        // reference/cpp/core/environ/impl/TVPWindow.cpp:498-524,988-1000: a
++        // close result releases the suspended caller, which can read its result.
++        assert_eq!(fixture.integer("resumed"), 1, "{name}");
++        assert_eq!(fixture.integer("chosen"), expected, "{name}");
++        assert_eq!(fixture.integer("backgroundClicks"), 0, "{name}");
++        assert_eq!(fixture.game.scene().windows.len(), 1, "{name}");
++    }
++}
++
++#[test]
++fn modal_input_excludes_background_and_escape_cancels() {
++    let _lock = vm_lock();
++    let mut fixture = Fixture::open("cancel");
++    fixture.frame(&[]);
++    fixture.click(16.0, 16.0);
++
++    // reference/cpp/core/environ/impl/TVPWindow.cpp:498-524: the background
++    // window is not the current input window while the modal form is active.
++    assert_eq!(fixture.integer("backgroundClicks"), 0);
++    assert_eq!(fixture.integer("resumed"), 0);
++    fixture.frame(&[PlatformEvent::Input(InputEvent::Key {
++        code: PhysicalKey::Escape,
++        pressed: true,
++    })]);
++    fixture.frame(&[]);
++
++    // reference/cpp/core/environ/impl/TVPWindow.cpp:988-1000: closing the
++    // modal form finishes the pending invocation without an affirmative result.
++    assert_eq!(fixture.integer("chosen"), 0);
++    assert_eq!(fixture.integer("resumed"), 1);
++    assert_eq!(fixture.integer("backgroundKeys"), 0);
++
++    fixture.frame(&[PlatformEvent::Input(InputEvent::Key {
++        code: PhysicalKey::Escape,
++        pressed: false,
++    })]);
++    fixture.frame(&[PlatformEvent::Input(InputEvent::Key {
++        code: PhysicalKey::KeyA,
++        pressed: true,
++    })]);
++    // reference/cpp/core/environ/impl/TVPWindow.cpp:475-496: after a modal
++    // form ends, input returns to the active background window and its focus.
++    assert_eq!(fixture.integer("backgroundKeys"), 1);
++}
+diff --git a/crates/compat/src/event.rs b/crates/compat/src/event.rs
+--- a/crates/compat/src/event.rs
++++ b/crates/compat/src/event.rs
+@@ -10,6 +10,7 @@
+ //! L1 and only the TJS mapping lives here.
+ #![allow(unsafe_code)]
+ 
++use std::cell::Cell;
+ use std::collections::VecDeque;
+ use std::time::{Duration, Instant};
+ 
+@@ -88,6 +89,8 @@
+     deferred: VecDeque<PlatformEvent>,
+     /// The wall-clock time one frame may spend dispatching events.
+     dispatch_budget: Duration,
++    input_epoch: u64,
++    pub(crate) input_frame: Cell<Option<u64>>,
+ }
+ 
+ impl Default for EventAdapter {
+@@ -97,6 +100,8 @@
+             shift: 0,
+             deferred: VecDeque::new(),
+             dispatch_budget: Self::DEFAULT_DISPATCH_BUDGET,
++            input_epoch: 0,
++            input_frame: Cell::new(None),
+         }
+     }
+ }
+@@ -287,6 +292,12 @@
+         events: &[PlatformEvent],
+     ) -> Result<(), CompatError> {
+         let started = Instant::now();
++        let epoch = crate::modal::input_epoch(ctx);
++        if self.input_epoch != epoch {
++            self.deferred
++                .retain(|event| !matches!(event, PlatformEvent::Input(_)));
++            self.input_epoch = epoch;
++        }
+         // The events the last frame did not dispatch come first.
+         let mut deferred = std::mem::take(&mut self.deferred);
+         let deferred_len = deferred.len();
+@@ -327,6 +338,20 @@
+                     Some(position) == last_move,
+                     deliver_layer_move,
+                 )?;
++                if crate::modal::input_epoch(ctx) != epoch {
++                    self.deferred = deferred
++                        .into_iter()
++                        .skip(queued + usize::from(queued < deferred_len))
++                        .chain(
++                            events[index + usize::from(queued >= deferred_len)..]
++                                .iter()
++                                .cloned(),
++                        )
++                        .filter(|event| !matches!(event, PlatformEvent::Input(_)))
++                        .collect();
++                    self.input_epoch = crate::modal::input_epoch(ctx);
++                    return Ok(());
++                }
+             }
+             if queued < deferred_len {
+                 queued += 1;
+@@ -386,6 +411,7 @@
+         deliver_window_move: bool,
+         deliver_layer_move: bool,
+     ) -> Result<(), CompatError> {
++        let epoch = crate::modal::input_epoch(ctx);
+         // A committed multi-character string is one `onKeyPress` per
+         // character, matching the reference platform's per-`tjs_char`
+         // post (`reference/cpp/core/environ/impl/TVPWindow.cpp:909-919`).
+@@ -399,6 +425,9 @@
+                     args: vec![EventValue::Str(character.to_string()), EventValue::Int(1)],
+                 };
+                 self.dispatch_event(ctx, &single, deliver_window_move, deliver_layer_move)?;
++                if crate::modal::input_epoch(ctx) != epoch {
++                    return Ok(());
++                }
+             }
+             return Ok(());
+         }
+@@ -426,7 +455,15 @@
+         if let Some(id) = window
+             && (event.name != "onMouseMove" || deliver_window_move)
+         {
+-            deliver_checked(ctx, event.name, &event.window_args(), Target::Window(id));
++            deliver_checked(
++                ctx,
++                event.name,
++                &window_args(ctx, event, id),
++                Target::Window(id),
++            );
++            if crate::modal::input_epoch(ctx) != epoch {
++                return Ok(());
++            }
+         }
+ 
+         // The layer receives the input events that hit it or have focus.
+@@ -475,6 +512,9 @@
+         {
+             let args = self.layer_args(ctx, event, id);
+             deliver_checked(ctx, event.name, &args, Target::Layer(id));
++            if crate::modal::input_epoch(ctx) != epoch {
++                return Ok(());
++            }
+         }
+ 
+         // A pointer move that re-enters the window posts the window-level
+@@ -494,9 +534,17 @@
+             if let Some(id) = pointer_layer {
+                 let args = self.layer_args(ctx, &click, id);
+                 deliver_checked(ctx, click.name, &args, Target::Layer(id));
++                if crate::modal::input_epoch(ctx) != epoch {
++                    return Ok(());
++                }
+             }
+             if let Some(id) = window {
+-                deliver_checked(ctx, click.name, &click.args, Target::Window(id));
++                deliver_checked(
++                    ctx,
++                    click.name,
++                    &window_args(ctx, &click, id),
++                    Target::Window(id),
++                );
+             }
+         }
+         Ok(())
+@@ -660,6 +708,49 @@
+     last_move_position: Option<(i64, i64)>,
+ }
+ 
++/// Clears pending press/capture state when entering or leaving a modal window.
++///
++/// Suspended event batches discard input from the preceding modal generation.
++/// Returns an error if the host did not attach an input state.
++pub fn clear_modal_input(ctx: &CompatCtx) -> Result<(), CompatError> {
++    // SAFETY: the context belongs to the live single-threaded host.
++    let services = unsafe { ctx.services() };
++    let pointer = services
++        .input()
++        .ok_or_else(|| CompatError::Engine("modal input: no input state is attached".to_owned()))?;
++    // SAFETY: no input state borrow is held across this function or script dispatch.
++    let input = unsafe { &mut *pointer };
++    for button in [
++        MouseButton::Left,
++        MouseButton::Right,
++        MouseButton::Middle,
++        MouseButton::Back,
++        MouseButton::Forward,
++    ] {
++        input.set_button_raw(button, false);
++        input.clear_click_sequence(button);
++    }
++    let keys: Vec<u32> = input.held_keys().collect();
++    for key in keys {
++        input.set_key(key, false);
++    }
++    let contacts: Vec<_> = input
++        .touch_contacts()
++        .map(|contact| contact.point)
++        .collect();
++    for contact in contacts {
++        input.apply(&InputEvent::Touch {
++            id: contact.id,
++            phase: TouchPhase::Cancelled,
++            x: contact.pos.0,
++            y: contact.pos.1,
++        });
++    }
++    *services.state::<InputDispatchState>() = InputDispatchState::default();
++    crate::modal::advance_input_epoch(ctx);
++    Ok(())
++}
++
+ /// Whether the event is a pointer event that hit-tests the layer tree.
+ fn is_pointer_event(name: &str) -> bool {
+     matches!(name, "onMouseMove" | "onMouseDown" | "onMouseUp")
+@@ -690,7 +781,14 @@
+ /// Resolve a pointer event's layer, honouring the mouse capture.
+ fn resolve_pointer(ctx: &CompatCtx, name: &str) -> Option<u32> {
+     let stored = capture_layer(ctx);
+-    let captured = stored.filter(|id| scene(ctx).is_some_and(|scene| scene.layer(*id).is_some()));
++    let modal = crate::modal::active_window(ctx);
++    let captured = stored.filter(|id| {
++        scene(ctx).is_some_and(|scene| {
++            scene
++                .layer(*id)
++                .is_some_and(|layer| modal.is_none_or(|window| layer.window == window))
++        })
++    });
+     if stored.is_some() && captured.is_none() {
+         set_capture_layer(ctx, None);
+     }
+@@ -722,21 +820,33 @@
+ /// visible window is the one on top: the pointer belongs to it, and a window
+ /// below is only searched when the window on top has no layer at the point.
+ fn hit_layer(ctx: &CompatCtx, x: i32, y: i32) -> Option<u32> {
+-    let roots: Vec<(u32, u32)> = {
++    let modal = crate::modal::active_window(ctx);
++    let roots: Vec<(u32, u32, (i32, i32))> = {
+         let scene = scene_mut(ctx)?;
+         scene
+             .windows
+             .iter()
+-            .filter(|window| window.visible)
+-            .filter_map(|window| window.primary_layer.map(|primary| (window.id, primary)))
++            .filter(|window| window.visible && modal.is_none_or(|id| window.id == id))
++            .filter_map(|window| {
++                window
++                    .primary_layer
++                    .map(|primary| (window.id, primary, scene.window_origin(window.id)))
++            })
+             .collect()
+     };
+-    for (window, primary) in roots.into_iter().rev() {
++    for (window, primary, origin) in roots.into_iter().rev() {
+         {
+             let scene = scene_mut(ctx)?;
+             resolve_layer_images(scene, window);
+         }
+-        if let Some(layer) = hit_test(ctx, primary, x, y, false, false) {
++        if let Some(layer) = hit_test(
++            ctx,
++            primary,
++            x.saturating_sub(origin.0),
++            y.saturating_sub(origin.1),
++            false,
++            false,
++        ) {
+             return Some(layer);
+         }
+     }
+@@ -845,10 +955,34 @@
+     hit_layer(ctx, x.round() as i32, y.round() as i32)
+ }
+ 
+-/// The focused layer of the first window.
++/// The focused layer of the active input window.
+ fn focused_layer(ctx: &CompatCtx) -> Option<u32> {
+-    let window = scene(ctx)?.windows.first()?;
++    let scene = scene(ctx)?;
++    let window = scene.window(top_window(ctx)?)?;
+     window.focused_layer
++}
++
++fn window_args(ctx: &CompatCtx, event: &TjsEvent, window: u32) -> Vec<EventValue> {
++    let mut args = event.window_args();
++    let positions = match event.name {
++        "onMouseMove" | "onMouseDown" | "onMouseUp" | "onClick" | "onDoubleClick"
++        | "onTouchDown" | "onTouchMove" | "onTouchUp" => Some((0, 1)),
++        "onMouseWheel" => Some((2, 3)),
++        _ => None,
++    };
++    if let Some((x, y)) = positions
++        && let Some(scene) = scene(ctx)
++    {
++        let origin = scene.window_origin(window);
++        for (index, offset) in [(x, origin.0), (y, origin.1)] {
++            match args.get_mut(index) {
++                Some(EventValue::Int(value)) => *value = value.saturating_sub(i64::from(offset)),
++                Some(EventValue::Real(value)) => *value -= f64::from(offset),
++                _ => {}
++            }
++        }
++    }
++    args
+ }
+ 
+ /// The topmost visible window's id.
+@@ -856,6 +990,12 @@
+ /// The scene draws its windows in order, so the last visible window is the
+ /// one on top and owns the pointer.
+ fn top_window(ctx: &CompatCtx) -> Option<u32> {
++    if let Some(id) = crate::modal::active_window(ctx) {
++        return scene(ctx)?
++            .window(id)
++            .filter(|window| window.visible)
++            .map(|window| window.id);
++    }
+     let window = scene(ctx)?.windows.iter().rev().find(|w| w.visible)?;
+     Some(window.id)
+ }
+@@ -960,6 +1100,10 @@
+     };
+     let mut offset = (0i64, 0i64);
+     let mut current = scene.layer(layer_id);
++    if let Some(layer) = current {
++        let origin = scene.window_origin(layer.window);
++        offset = (i64::from(origin.0), i64::from(origin.1));
++    }
+     while let Some(layer) = current {
+         if layer.parent.is_none() {
+             break;
+@@ -1022,6 +1166,15 @@
+         Target::Window(id) => (ObjectKind::Window, id),
+         Target::Layer(id) => (ObjectKind::Layer, id),
+     };
++    if let Some(modal) = crate::modal::active_window(ctx) {
++        let window = match target {
++            Target::Window(window) => Some(window),
++            Target::Layer(layer) => layer_window(ctx, layer),
++        };
++        if window != Some(modal) {
++            return Ok(());
++        }
++    }
+     let Some(object) = duplicate_object(ctx, host, kind, id) else {
+         return Err(format!("event target {id} has no script object"));
+     };
+diff --git a/crates/compat/src/host.rs b/crates/compat/src/host.rs
+--- a/crates/compat/src/host.rs
++++ b/crates/compat/src/host.rs
+@@ -49,6 +49,13 @@
+     /// The L2 services the natives compose.
+     pub fn services(&self) -> &CompatServices {
+         &self.services
++    }
++
++    /// Installs the same-thread driver that presents and services a modal window.
++    ///
++    /// The driver returns only after close, invalidation, or a host error.
++    pub fn set_modal_driver(&self, driver: Option<crate::ModalDriver>) {
++        crate::modal::install_driver(&self.services, driver);
+     }
+ 
+     /// The L2 services, mutably (attach scene/storage before installing).
+diff --git a/crates/compat/src/lib.rs b/crates/compat/src/lib.rs
+--- a/crates/compat/src/lib.rs
++++ b/crates/compat/src/lib.rs
+@@ -60,6 +60,7 @@
+ mod event;
+ mod frame;
+ mod host;
++mod modal;
+ mod native_util;
+ mod natives;
+ mod plugin;
+@@ -69,9 +70,11 @@
+ mod text;
+ 
+ pub use ctx::{CompatCtx, CompatServices};
++pub use event::clear_modal_input;
+ pub use event::{EventAdapter, EventValue, TjsEvent};
+ pub use frame::{FrameBody, run_frame_body};
+ pub use host::CompatHost;
++pub use modal::{ModalDriver, modal_active};
+ pub use natives::alpha_movie::{
+     AlphaMovieError, AlphaMovieFrame, AlphaMovieSession, AlphaMovieSource, AlphaMovieSpec,
+     set_alpha_movie_source,
+diff --git a/crates/compat/src/modal.rs b/crates/compat/src/modal.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/compat/src/modal.rs
+@@ -0,0 +1,140 @@
++//! Modal execution policy and the host-owned frame driver.
++#![allow(unsafe_code)]
++
++use std::rc::Rc;
++
++use crate::natives::visual::common::{scene_mut, scene_ref};
++use crate::{CompatCtx, CompatError, CompatServices};
++
++/// Same-thread host callback that services a window until its modal wait ends.
++pub type ModalDriver = Rc<dyn Fn(u32) -> Result<(), CompatError>>;
++
++struct ModalEntry {
++    window: u32,
++    previous: Option<u32>,
++    completed: bool,
++}
++
++#[derive(Default)]
++struct ModalState {
++    driver: Option<ModalDriver>,
++    stack: Vec<ModalEntry>,
++    input_epoch: u64,
++}
++
++pub(crate) fn install_driver(services: &CompatServices, driver: Option<ModalDriver>) {
++    services.state::<ModalState>().driver = driver;
++}
++
++/// Whether the window is still waiting for a modal close.
++pub fn modal_active(ctx: &CompatCtx, window: u32) -> bool {
++    // SAFETY: the context is installed for the live single-threaded host.
++    let services = unsafe { ctx.services() };
++    let pending = services
++        .state::<ModalState>()
++        .stack
++        .iter()
++        .any(|entry| entry.window == window && !entry.completed);
++    pending && scene_ref(ctx).is_ok_and(|scene| scene.window(window).is_some_and(|w| w.visible))
++}
++
++pub(crate) fn active_window(ctx: &CompatCtx) -> Option<u32> {
++    // SAFETY: the context is installed for the live single-threaded host.
++    unsafe { ctx.services() }
++        .state::<ModalState>()
++        .stack
++        .last()
++        .map(|entry| entry.window)
++}
++
++pub(crate) fn input_epoch(ctx: &CompatCtx) -> u64 {
++    // SAFETY: the context is installed for the live single-threaded host.
++    unsafe { ctx.services() }.state::<ModalState>().input_epoch
++}
++
++pub(crate) fn advance_input_epoch(ctx: &CompatCtx) {
++    // SAFETY: the context is installed for the live single-threaded host.
++    let services = unsafe { ctx.services() };
++    let mut state = services.state::<ModalState>();
++    state.input_epoch = state.input_epoch.wrapping_add(1);
++}
++
++pub(crate) fn finish_window(ctx: &CompatCtx, window: u32) -> bool {
++    // SAFETY: the context is installed for the live single-threaded host.
++    let services = unsafe { ctx.services() };
++    let mut state = services.state::<ModalState>();
++    let Some(entry) = state
++        .stack
++        .iter_mut()
++        .rev()
++        .find(|entry| entry.window == window)
++    else {
++        return false;
++    };
++    entry.completed = true;
++    state.input_epoch = state.input_epoch.wrapping_add(1);
++    true
++}
++
++pub(crate) fn run_modal(ctx: &CompatCtx, window: u32) -> Result<(), CompatError> {
++    let driver = {
++        // SAFETY: the context is installed for the live single-threaded host.
++        let services = unsafe { ctx.services() };
++        let state = services.state::<ModalState>();
++        if state.stack.iter().any(|entry| entry.window == window) {
++            return Err(CompatError::Engine("Window is already modal".to_owned()));
++        }
++        state.driver.clone().ok_or_else(|| {
++            CompatError::Engine("Window.showModal: no modal host is attached".to_owned())
++        })?
++    };
++    let previous = {
++        let scene = scene_mut(ctx).map_err(CompatError::Engine)?;
++        let previous = scene
++            .windows
++            .iter()
++            .rev()
++            .find(|w| w.visible && w.id != window)
++            .map(|w| w.id);
++        let dialog = scene.window_mut(window).ok_or_else(|| {
++            CompatError::Engine("Window.showModal: this window is not constructed".to_owned())
++        })?;
++        dialog.visible = true;
++        scene.bring_window_to_front(window);
++        previous
++    };
++    {
++        // SAFETY: the context is installed for the live single-threaded host.
++        let services = unsafe { ctx.services() };
++        services.state::<ModalState>().stack.push(ModalEntry {
++            window,
++            previous,
++            completed: false,
++        });
++    }
++    let outcome = crate::clear_modal_input(ctx).and_then(|()| driver(window));
++    let still_active = modal_active(ctx, window);
++    let previous = {
++        // SAFETY: the context is installed for the live single-threaded host.
++        let services = unsafe { ctx.services() };
++        let mut state = services.state::<ModalState>();
++        state.stack.pop().and_then(|entry| entry.previous)
++    };
++    {
++        let scene = scene_mut(ctx).map_err(CompatError::Engine)?;
++        if let Some(dialog) = scene.window_mut(window) {
++            dialog.visible = false;
++        }
++        if let Some(previous) = previous.filter(|id| scene.window(*id).is_some_and(|w| w.visible)) {
++            scene.bring_window_to_front(previous);
++        }
++    }
++    crate::clear_modal_input(ctx)?;
++    outcome?;
++    if still_active {
++        return Err(CompatError::Engine(
++            "Window.showModal: host returned before the window closed".to_owned(),
++        ));
++    }
++    Ok(())
++}
+diff --git a/crates/compat/src/natives/input.rs b/crates/compat/src/natives/input.rs
+--- a/crates/compat/src/natives/input.rs
++++ b/crates/compat/src/natives/input.rs
+@@ -565,6 +565,7 @@
+             // SAFETY: `attach_input` guarantees the pointer stays valid while
+             // the binding is installed.
+             let input = unsafe { &mut *input };
++            self.input_frame.set(Some(input.frame()));
+             input.set_click_sequence(MOUSE_CLICK_SEQUENCE_FRAMES, MOUSE_CLICK_MAX_MOVE as f32);
+             input.begin_frame();
+         }
+@@ -590,7 +591,10 @@
+         let services = unsafe { ctx.services() };
+         if let Some(input) = services.input() {
+             // SAFETY: `attach_input` guarantees the pointer stays valid.
+-            unsafe { &mut *input }.end_frame();
++            let input = unsafe { &mut *input };
++            if self.input_frame.get() == Some(input.frame()) {
++                input.end_frame();
++            }
+         }
+     }
+ }
+diff --git a/crates/compat/src/natives/system.rs b/crates/compat/src/natives/system.rs
+--- a/crates/compat/src/natives/system.rs
++++ b/crates/compat/src/natives/system.rs
+@@ -128,6 +128,8 @@
+     /// Registered `addContinuousHandler` callbacks. A slot is `None` while
+     /// its handler runs or after it was removed.
+     continuous: Vec<Option<ContinuousHandler>>,
++    /// Whether a continuous delivery pass is still executing a callback.
++    continuous_processing: bool,
+     /// Identity of the handler currently being delivered, if any.
+     current_continuous: Option<(usize, usize)>,
+     /// Set when `removeContinuousHandler` targets the running handler.
+@@ -155,6 +157,7 @@
+             last_rehashed_ms: 0,
+             uuid_counter: 0,
+             continuous: Vec::new(),
++            continuous_processing: false,
+             current_continuous: None,
+             remove_current_continuous: false,
+             key_query_seen: Set::default(),
+@@ -180,6 +183,14 @@
+ #[must_use]
+ pub fn take_exit_request(services: &CompatServices) -> Option<i32> {
+     services.state::<SystemState>().exit_request.take()
++}
++
++struct ContinuousDelivery<'a>(&'a CompatServices);
++
++impl Drop for ContinuousDelivery<'_> {
++    fn drop(&mut self) {
++        self.0.state::<SystemState>().continuous_processing = false;
++    }
+ }
+ 
+ /// Advance every `System.addContinuousHandler` callback once, passing the
+@@ -200,6 +211,16 @@
+     // SAFETY: a `CompatCtx` is only created for a bound, live engine.
+     let engine = unsafe { ctx.engine() };
+     let services = services(ctx);
++    {
++        let mut state = services.state::<SystemState>();
++        if state.continuous_processing {
++            return Ok(
++                state.current_continuous.is_some() || state.continuous.iter().any(Option::is_some)
++            );
++        }
++        state.continuous_processing = true;
++    }
++    let _delivery = ContinuousDelivery(services);
+     let tick = tick_count_ms(services).map_err(CompatError::Engine)?;
+     let mut index = 0usize;
+     loop {
+@@ -781,7 +802,7 @@
+         return (0, 0);
+     };
+     let scene = host_ref(ptr);
+-    let Some(window) = scene.windows.first() else {
++    let Some(window) = scene.presentation_window() else {
+         return (0, 0);
+     };
+     window
+diff --git a/crates/compat/src/natives/tree_owner.rs b/crates/compat/src/natives/tree_owner.rs
+--- a/crates/compat/src/natives/tree_owner.rs
++++ b/crates/compat/src/natives/tree_owner.rs
+@@ -487,7 +487,7 @@
+         // the host keeps the attached scene alive for the binding's lifetime.
+         let ptr = unsafe { ctx.services() }.scene();
+         // SAFETY: see above.
+-        ptr.and_then(|ptr| unsafe { &*ptr }.windows.first().map(|w| w.id))
++        ptr.and_then(|ptr| unsafe { &*ptr }.presentation_window().map(|w| w.id))
+     };
+     // SAFETY: `instance` is the live payload the VM passed to the constructor.
+     unsafe { &mut *(instance as *mut TreeOwnerInst) }.window = window;
+diff --git a/crates/compat/src/natives/visual/layer/mod.rs b/crates/compat/src/natives/visual/layer/mod.rs
+--- a/crates/compat/src/natives/visual/layer/mod.rs
++++ b/crates/compat/src/natives/visual/layer/mod.rs
+@@ -543,7 +543,7 @@
+     };
+     let window = match window {
+         Some(id) if scene.window(id as u32).is_some() => id as u32,
+-        _ => match scene.windows.first() {
++        _ => match scene.presentation_window() {
+             Some(window) => window.id,
+             None => {
+                 return report_error(
+diff --git a/crates/compat/src/natives/visual/mod.rs b/crates/compat/src/natives/visual/mod.rs
+--- a/crates/compat/src/natives/visual/mod.rs
++++ b/crates/compat/src/natives/visual/mod.rs
+@@ -88,7 +88,7 @@
+     COLOR_KEY_NONE, PendingLoad, image_candidates, load_cached_storage_image, resolve_pending_load,
+     resolved_image_name, set_index_plane_decoder, submit_pending_load,
+ };
+-mod common;
++pub(crate) mod common;
+ pub(crate) use common::{ObjectKind, duplicate_object, swap_red_blue};
+ pub(crate) use layer::{clear_layer_focus, focus_layer, focus_layer_in_input_domain, from_native};
+ mod draw_device;
+diff --git a/crates/compat/src/natives/visual/window.rs b/crates/compat/src/natives/visual/window.rs
+--- a/crates/compat/src/natives/visual/window.rs
++++ b/crates/compat/src/natives/visual/window.rs
+@@ -57,7 +57,6 @@
+     ime_mode: i32,
+     use_mouse_key: bool,
+     trap_key: bool,
+-    modal: bool,
+     /// `tTVPBorderStyle` (0 = `bsNone`).
+     border_style: i32,
+     stay_on_top: bool,
+@@ -100,7 +99,6 @@
+             ime_mode: 0,
+             use_mouse_key: false,
+             trap_key: false,
+-            modal: false,
+             border_style: 0,
+             stay_on_top: false,
+             touch_scale_threshold: 5.0,
+@@ -269,6 +267,7 @@
+         return;
+     };
+     if let Some(id) = id {
++        crate::modal::finish_window(&ctx, id);
+         release_window_objects(&ctx, resolved.engine(), id);
+     }
+     // Reference `SetDrawDeviceObject(tTJSVariant())`
+@@ -380,6 +379,21 @@
+     let Ok((resolved, ctx)) = bound(engine) else {
+         return report_error(out_error, "Window.close: compat context is not bound");
+     };
++    let modal_id = {
++        // SAFETY: the VM keeps the native window alive during this call.
++        unsafe { &*(instance as *const WindowInst) }.id
++    };
++    if let Some(id) = modal_id
++        && crate::modal::finish_window(&ctx, id)
++    {
++        if let Ok(scene) = scene_mut(&ctx)
++            && let Some(window) = scene.window_mut(id)
++        {
++            window.visible = false;
++        }
++        set_void(out);
++        return 0;
++    }
+     let id = {
+         // SAFETY: `instance` is the `WindowInst` boxed by `window_create`; the VM dispatches one callback at a time on it, and this borrow ends before any call that could re-enter the VM.
+         let inst = unsafe { &mut *(instance as *mut WindowInst) };
+@@ -638,7 +652,7 @@
+ 
+ /// `Window.setPos(left, top)`.
+ extern "C" fn window_set_pos(
+-    _engine: *mut c_void,
++    engine: *mut c_void,
+     instance: *mut c_void,
+     argc: c_int,
+     argv: *const Value,
+@@ -658,6 +672,9 @@
+     let inst = unsafe { &mut *(instance as *mut WindowInst) };
+     inst.left = value_as_i64(&a[0]) as i32;
+     inst.top = value_as_i64(&a[1]) as i32;
++    if let Err(error) = sync_window_position(engine, instance) {
++        return report_error(out_error, &error);
++    }
+     set_void(out);
+     0
+ }
+@@ -797,12 +814,12 @@
+     0
+ }
+ 
+-/// `Window.showModal([modal])` — record the modal state.
++/// `Window.showModal()` waits for close while the host services the window.
+ extern "C" fn window_show_modal(
+-    _engine: *mut c_void,
+-    instance: *mut c_void,
+-    argc: c_int,
+-    argv: *const Value,
++    engine: *mut c_void,
++    instance: *mut c_void,
++    _argc: c_int,
++    _argv: *const Value,
+     out: *mut Value,
+     out_error: *mut *mut c_char,
+     _objthis: *mut c_void,
+@@ -810,14 +827,22 @@
+     if let Err(error) = full_screen_guard(instance) {
+         return report_error(out_error, &error);
+     }
+-    // SAFETY: `instance` is the `WindowInst` boxed by `window_create`; the VM dispatches one callback at a time on it, and this borrow ends before any call that could re-enter the VM.
+-    let inst = unsafe { &mut *(instance as *mut WindowInst) };
+-    inst.modal = if argc >= 1 {
+-        // SAFETY: the C++ trampoline passes `argc` live `Value`s in `argv` for the duration of this callback.
+-        value_as_bool(&unsafe { args(argv, argc) }[0])
+-    } else {
+-        true
+-    };
++    let Ok((_resolved, ctx)) = bound(engine) else {
++        return report_error(out_error, "Window.showModal: compat context is not bound");
++    };
++    let id = {
++        // SAFETY: the native payload is read only before entering script callbacks.
++        unsafe { &*(instance as *const WindowInst) }.id
++    };
++    let Some(id) = id else {
++        return report_error(
++            out_error,
++            "Window.showModal: this window is not constructed",
++        );
++    };
++    if let Err(error) = crate::modal::run_modal(&ctx, id) {
++        return report_error(out_error, &error.to_string());
++    }
+     set_void(out);
+     0
+ }
+@@ -1321,8 +1346,87 @@
+     (@check unguarded, $instance:ident, $out_error:ident) => {};
+ }
+ 
+-window_i64_prop!(window_left_get, window_left_set, left, guarded);
+-window_i64_prop!(window_top_get, window_top_set, top, guarded);
++fn sync_window_position(engine: *mut c_void, instance: *mut c_void) -> Result<(), String> {
++    let (_, ctx) = bound(engine)?;
++    let (id, position) = {
++        // SAFETY: the VM keeps the native window alive during this callback.
++        let inst = unsafe { &*(instance as *const WindowInst) };
++        (inst.id, (inst.left, inst.top))
++    };
++    if let Some(id) = id
++        && let Some(window) = scene_mut(&ctx)?.window_mut(id)
++    {
++        window.position = position;
++    }
++    Ok(())
++}
++
++extern "C" fn window_left_get(
++    _engine: *mut c_void,
++    instance: *mut c_void,
++    out: *mut Value,
++    _out_error: *mut *mut c_char,
++    _objthis: *mut c_void,
++) -> c_int {
++    // SAFETY: the VM keeps the native window alive during this callback.
++    let left = unsafe { &*(instance as *const WindowInst) }.left;
++    set_int(out, i64::from(left));
++    0
++}
++
++extern "C" fn window_left_set(
++    engine: *mut c_void,
++    instance: *mut c_void,
++    value: *const Value,
++    out_error: *mut *mut c_char,
++    _objthis: *mut c_void,
++) -> c_int {
++    if let Err(error) = full_screen_guard(instance) {
++        return report_error(out_error, &error);
++    }
++    // SAFETY: the dispatcher keeps the value alive for this call.
++    let left = value_as_i64(unsafe { &*value }) as i32;
++    // SAFETY: the VM keeps the native window alive during this callback.
++    unsafe { &mut *(instance as *mut WindowInst) }.left = left;
++    if let Err(error) = sync_window_position(engine, instance) {
++        return report_error(out_error, &error);
++    }
++    0
++}
++
++extern "C" fn window_top_get(
++    _engine: *mut c_void,
++    instance: *mut c_void,
++    out: *mut Value,
++    _out_error: *mut *mut c_char,
++    _objthis: *mut c_void,
++) -> c_int {
++    // SAFETY: the VM keeps the native window alive during this callback.
++    let top = unsafe { &*(instance as *const WindowInst) }.top;
++    set_int(out, i64::from(top));
++    0
++}
++
++extern "C" fn window_top_set(
++    engine: *mut c_void,
++    instance: *mut c_void,
++    value: *const Value,
++    out_error: *mut *mut c_char,
++    _objthis: *mut c_void,
++) -> c_int {
++    if let Err(error) = full_screen_guard(instance) {
++        return report_error(out_error, &error);
++    }
++    // SAFETY: the dispatcher keeps the value alive for this call.
++    let top = value_as_i64(unsafe { &*value }) as i32;
++    // SAFETY: the VM keeps the native window alive during this callback.
++    unsafe { &mut *(instance as *mut WindowInst) }.top = top;
++    if let Err(error) = sync_window_position(engine, instance) {
++        return report_error(out_error, &error);
++    }
++    0
++}
++
+ window_i64_prop!(
+     window_min_width_get,
+     window_min_width_set,
+@@ -1546,9 +1650,8 @@
+     0
+ }
+ 
+-/// `Window.mainWindow` (static) — the scene's first window object
+-/// (`TVPMainWindow`). It is a static member of the reference `Window` class,
+-/// so it lives on the class object and is read as `global.Window.mainWindow`.
++/// `Window.mainWindow` resolves the oldest surviving window independently
++/// of stacking order. The static member is read as `global.Window.mainWindow`.
+ extern "C" fn window_main_window_get(
+     engine: *mut c_void,
+     out: *mut Value,
+@@ -1561,7 +1664,7 @@
+         Ok(scene) => scene,
+         Err(error) => return report_error(out_error, &error),
+     };
+-    let id = scene.windows.first().map(|w| w.id);
++    let id = scene.presentation_window().map(|w| w.id);
+     let object =
+         id.and_then(|id| duplicate_object(&ctx, resolved.engine(), ObjectKind::Window, id));
+     set_object_out(resolved.engine(), out, object.as_ref());
+diff --git a/crates/compat/tests/common/mod.rs b/crates/compat/tests/common/mod.rs
+--- a/crates/compat/tests/common/mod.rs
++++ b/crates/compat/tests/common/mod.rs
+@@ -253,6 +253,16 @@
+         &self.engine
+     }
+ 
++    /// Installs the driver that services a synchronous modal call.
++    pub fn modal_driver(&self, driver: Option<compat::ModalDriver>) {
++        self._host.set_modal_driver(driver);
++    }
++
++    /// Returns a handle to this harness's installed compatibility context.
++    pub fn compat_context(&self) -> compat::CompatCtx {
++        self._host.ctx().expect("installed test context")
++    }
++
+     pub fn run(&self, script: &str) {
+         self.engine
+             .exec_script(script, "compat-test")
+diff --git a/crates/compat/tests/system_continuous_modal.rs b/crates/compat/tests/system_continuous_modal.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/compat/tests/system_continuous_modal.rs
+@@ -0,0 +1,107 @@
++//! Continuous-event delivery does not re-enter while a modal callback waits.
++//!
++//! reference/cpp/core/event/EventIntf.cpp:868-890
++
++mod common;
++
++use std::cell::Cell;
++use std::rc::Rc;
++
++use compat::CompatError;
++use tjs::TjsValue;
++
++use common::{Env, vm_lock};
++
++fn observed_integer(env: &Env, expression: &str) -> Result<i64, CompatError> {
++    match env.engine().eval(expression, "modal-observation") {
++        Ok(TjsValue::Integer(value)) => Ok(value),
++        Ok(other) => Err(CompatError::Engine(format!(
++            "expected integer for {expression}, got {other:?}"
++        ))),
++        Err(error) => Err(CompatError::Engine(error.to_string())),
++    }
++}
++
++fn poll(env: &Env) -> bool {
++    compat::continuous_handler_poll(&mut env.compat_context()).expect("continuous poll")
++}
++
++#[test]
++fn modal_timer_can_remove_the_suspended_continuous_handler() {
++    let _lock = vm_lock();
++    let env = Rc::new(Env::new());
++    env.run(
++        r#"
++        var aCalls = 0, bCalls = 0, resumed = 0;
++        var dialog = new Window();
++        var closer = new Timer(function() {
++            closer.enabled = false;
++            System.removeContinuousHandler(first);
++            dialog.close();
++        }, '');
++        closer.interval = 10;
++        closer.enabled = true;
++        function first(tick) {
++            aCalls++;
++            if(aCalls == 1) {
++                dialog.showModal();
++                resumed++;
++            }
++        }
++        function second(tick) { bCalls++; }
++        System.addContinuousHandler(first);
++        System.addContinuousHandler(second);
++        "#,
++    );
++    let observed = Rc::new(Cell::new(None));
++    let nested = Rc::clone(&observed);
++    let weak = Rc::downgrade(&env);
++    env.modal_driver(Some(Rc::new(move |_window| {
++        let env = weak
++            .upgrade()
++            .ok_or_else(|| CompatError::Engine("modal test host stopped".to_owned()))?;
++        compat::continuous_handler_poll(&mut env.compat_context())?;
++        nested.set(Some((
++            observed_integer(&env, "aCalls")?,
++            observed_integer(&env, "bCalls")?,
++        )));
++        env.advance_time(16);
++        env.deliver_due_timers();
++        compat::timer_poll(&mut env.compat_context())?;
++        Ok(())
++    })));
++
++    assert!(poll(&env));
++    // reference/cpp/core/event/EventIntf.cpp:868-890: an already active
++    // continuous delivery returns before invoking another handler.
++    assert_eq!(observed.get(), Some((1, 0)));
++    // reference/cpp/core/event/EventIntf.cpp:868-890: modal pumping does not
++    // advance the active handler list; the outer pass resumes exactly once.
++    assert_eq!(env.eval_int("aCalls"), 1);
++    assert_eq!(env.eval_int("resumed"), 1);
++    assert_eq!(env.eval_int("bCalls"), 1);
++    assert!(poll(&env));
++    // reference/cpp/core/event/EventIntf.cpp:868-890: removal during the
++    // callback stays effective after the delivery guard has been released.
++    assert_eq!(env.eval_int("aCalls"), 1);
++    assert_eq!(env.eval_int("bCalls"), 2);
++}
++
++#[test]
++fn a_throwing_callback_does_not_leave_continuous_delivery_locked() {
++    let _lock = vm_lock();
++    let env = Env::new();
++    env.run(
++        "var failures=0, calls=0; \
++         function failing(tick) { failures++; throw 'continuous fixture error'; } \
++         function succeeding(tick) { calls++; } \
++         System.addContinuousHandler(failing); \
++         System.addContinuousHandler(succeeding);",
++    );
++    assert!(poll(&env));
++    assert!(poll(&env));
++    // reference/cpp/core/event/EventIntf.cpp:868-890: exception cleanup clears
++    // the processing guard; a later pass can deliver the surviving handler.
++    assert_eq!(env.eval_int("failures"), 1);
++    assert_eq!(env.eval_int("calls"), 2);
++}
+diff --git a/crates/compat/tests/window_modal.rs b/crates/compat/tests/window_modal.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/compat/tests/window_modal.rs
+@@ -0,0 +1,268 @@
++//! Modal windows preserve the synchronous caller until a genuine close.
++//! reference/cpp/core/environ/impl/TVPWindow.cpp:498-524,988-1000
++
++mod common;
++
++use compat::CompatError;
++use std::cell::Cell;
++use std::rc::{Rc, Weak};
++use tjs::TjsValue;
++
++use common::{Env, vm_lock};
++use platform::{InputEvent, MouseButton, PhysicalKey, PlatformEvent};
++
++fn live(weak: &Weak<Env>) -> Result<Rc<Env>, CompatError> {
++    weak.upgrade()
++        .ok_or_else(|| CompatError::Engine("test host expired".to_owned()))
++}
++
++fn execute(env: &Env, script: &str) -> Result<(), CompatError> {
++    env.engine()
++        .exec_script(script, "modal-test")
++        .map(|_| ())
++        .map_err(|error| CompatError::Engine(error.to_string()))
++}
++
++fn integer(env: &Env, expression: &str) -> Result<i64, CompatError> {
++    match env.eval(expression).map_err(CompatError::Engine)? {
++        TjsValue::Integer(value) => Ok(value),
++        other => Err(CompatError::Engine(format!(
++            "expected integer for {expression}, got {other:?}"
++        ))),
++    }
++}
++
++#[test]
++fn modal_close_preserves_result_until_the_caller_invalidates() {
++    let _lock = vm_lock();
++    let env = Rc::new(Env::new());
++    env.run("var main = new Window(); main.visible=true; var dialog=new Window(); var contents=new Layer(dialog, null); dialog.add(contents); var result=false; var resumed=false;");
++    let weak = Rc::downgrade(&env);
++    let dispatched = Rc::new(Cell::new(None));
++    let seen = Rc::clone(&dispatched);
++    env.modal_driver(Some(Rc::new(move |id| {
++        let env = live(&weak)?;
++        let before = (
++            compat::modal_active(&env.compat_context(), id),
++            integer(&env, "resumed")?,
++            integer(&env, "dialog.visible")?,
++        );
++        execute(&env, "result=true; dialog.close();")?;
++        seen.set(Some((
++            before,
++            compat::modal_active(&env.compat_context(), id),
++            integer(&env, "isvalid dialog")?,
++            integer(&env, "isvalid contents")?,
++        )));
++        Ok(())
++    })));
++    env.run("dialog.showModal(); resumed=true; var accepted=result; invalidate dialog;");
++    // reference/cpp/core/environ/impl/TVPWindow.cpp:498-524 — only the
++    // completed dialog allows the suspended script sequence to continue.
++    assert_eq!(dispatched.get(), Some(((true, 0, 1), false, 1, 1)));
++    assert_eq!(env.eval_int("accepted"), 1);
++    assert_eq!(env.eval_int("resumed"), 1);
++    assert_eq!(env.eval_int("isvalid contents"), 0);
++}
++
++#[test]
++fn cancelling_a_modal_preserves_false_and_restores_the_parent_window() {
++    let _lock = vm_lock();
++    let env = Rc::new(Env::new());
++    env.run("var main=new Window(); var dialog=new Window(); var result=false;");
++    let weak = Rc::downgrade(&env);
++    env.modal_driver(Some(Rc::new(move |_id| {
++        let env = live(&weak)?;
++        execute(&env, "dialog.close();")?;
++        Ok(())
++    })));
++    env.run("dialog.showModal(); var accepted=result;");
++    // reference/cpp/core/environ/impl/TVPWindow.cpp:498-524,988-1000 —
++    // cancelling closes the modal without fabricating an affirmative result.
++    assert_eq!(env.eval_int("accepted"), 0);
++    assert_eq!(env.eval_int("main.visible"), 1);
++    assert_eq!(env.eval_int("dialog.visible"), 0);
++}
++
++#[test]
++fn modal_driver_errors_release_the_modal_scope() {
++    let _lock = vm_lock();
++    let env = Rc::new(Env::new());
++    env.run("var main=new Window(); main.visible=true; var dialog=new Window();");
++    let modal_id = Rc::new(Cell::new(None));
++    let observed = Rc::clone(&modal_id);
++    env.modal_driver(Some(Rc::new(move |id| {
++        observed.set(Some(id));
++        Err(compat::CompatError::Engine("modal test stop".to_owned()))
++    })));
++    let error = env.error("dialog.showModal()");
++    // reference/cpp/core/environ/impl/TVPWindow.cpp:498-524 — the modal
++    // lifetime cannot survive an interrupted modal host loop.
++    assert!(error.contains("modal test stop"));
++    assert!(!compat::modal_active(
++        &env.compat_context(),
++        modal_id.get().expect("driver entered")
++    ));
++}
++
++#[test]
++fn modal_keyboard_and_positioned_pointer_do_not_reach_the_background() {
++    let _lock = vm_lock();
++    let env = Rc::new(Env::new());
++    env.run(
++        r#"
++        class Keys extends Window {
++            var keys=0;
++            function Keys() { super.Window(); visible=true; }
++            function onKeyDown(key, shift) { keys++; }
++        }
++        class Button extends Layer {
++            function Button(win, parent) { super.Layer(win, parent); }
++            var clicks=0; var clickX=-1; var clickY=-1;
++            function onClick(x, y) { clicks++; clickX=x; clickY=y; }
++        }
++        var main=new Keys(); main.setPos(100, 80); main.setInnerSize(640,480);
++        var background=new Button(main, null); background.setSize(640,480); background.hitThreshold=0;
++        var dialog=new Keys(); dialog.setPos(240, 180); dialog.setInnerSize(200,100);
++        var button=new Button(dialog, null); button.setSize(200,100); button.visible=true; button.hitThreshold=0;
++    "#,
++    );
++    let weak = Rc::downgrade(&env);
++    let observed = Rc::new(Cell::new(None));
++    let captured = Rc::clone(&observed);
++    env.modal_driver(Some(Rc::new(move |id| {
++        let env = live(&weak)?;
++        let mut ctx = env.compat_context();
++        let mut adapter = compat::EventAdapter::with_dispatch_budget(std::time::Duration::MAX);
++        adapter.begin_input_frame(&mut ctx);
++        adapter.dispatch_frame(
++            &mut ctx,
++            &[
++                PlatformEvent::Input(InputEvent::Key {
++                    code: PhysicalKey::KeyA,
++                    pressed: true,
++                }),
++                PlatformEvent::Input(InputEvent::PointerMoved { x: 150.0, y: 110.0 }),
++                PlatformEvent::Input(InputEvent::MouseButton {
++                    button: MouseButton::Left,
++                    pressed: true,
++                }),
++                PlatformEvent::Input(InputEvent::MouseButton {
++                    button: MouseButton::Left,
++                    pressed: false,
++                }),
++                PlatformEvent::Input(InputEvent::PointerMoved { x: 20.0, y: 20.0 }),
++                PlatformEvent::Input(InputEvent::MouseButton {
++                    button: MouseButton::Left,
++                    pressed: true,
++                }),
++                PlatformEvent::Input(InputEvent::MouseButton {
++                    button: MouseButton::Left,
++                    pressed: false,
++                }),
++            ],
++        )?;
++        adapter.end_input_frame(&mut ctx);
++        captured.set(Some((
++            compat::modal_active(&ctx, id),
++            integer(&env, "main.keys")?,
++            integer(&env, "dialog.keys")?,
++            integer(&env, "background.clicks")?,
++            integer(&env, "button.clicks")?,
++            integer(&env, "button.clickX")?,
++            integer(&env, "button.clickY")?,
++        )));
++        execute(&env, "dialog.close();")?;
++        Ok(())
++    })));
++    env.run("dialog.showModal();");
++    // reference/cpp/core/environ/impl/TVPWindow.cpp:498-524 — input is
++    // confined to the modal client, with the same origin as its pixels.
++    assert_eq!(observed.get(), Some((true, 0, 1, 0, 1, 10, 10)));
++
++    env.dispatch_events(&[PlatformEvent::Input(InputEvent::Key {
++        code: PhysicalKey::KeyB,
++        pressed: true,
++    })]);
++    // reference/cpp/core/environ/impl/TVPWindow.cpp:475-524 — returning
++    // from a modal restores the previous live window's input domain.
++    assert_eq!(env.eval_int("main.keys"), 1);
++    assert_eq!(env.eval_int("dialog.keys"), 1);
++}
++
++#[test]
++fn returning_from_a_modal_discards_the_triggering_input_batch() {
++    let _lock = vm_lock();
++    let env = Rc::new(Env::new());
++    env.run(
++        r#"
++        class Main extends Window {
++            function Main() { super.Window(); visible=true; }
++            var keys=0;
++            function onKeyDown(key, shift) { keys++; dialog.showModal(); }
++        }
++        var main=new Main(); var dialog=new Window(); dialog.visible=false;
++    "#,
++    );
++    let weak = Rc::downgrade(&env);
++    let calls = Rc::new(Cell::new(0));
++    let count = Rc::clone(&calls);
++    env.modal_driver(Some(Rc::new(move |_id| {
++        count.set(count.get() + 1);
++        let env = live(&weak)?;
++        execute(&env, "dialog.close();")?;
++        Ok(())
++    })));
++    env.dispatch_events(&[
++        PlatformEvent::Input(InputEvent::Key {
++            code: PhysicalKey::KeyA,
++            pressed: true,
++        }),
++        PlatformEvent::Input(InputEvent::Key {
++            code: PhysicalKey::KeyB,
++            pressed: true,
++        }),
++    ]);
++    // reference/cpp/core/visual/impl/WindowImpl.cpp:1505-1512 — stale
++    // input queued for the old window is cleared before a modal loop.
++    assert_eq!(env.eval_int("main.keys"), 1);
++    assert_eq!(calls.get(), 1);
++}
++
++#[test]
++fn nested_modal_scopes_restore_the_waiting_outer_window() {
++    let _lock = vm_lock();
++    let env = Rc::new(Env::new());
++    env.run(
++        "var main=new Window(); var outer=new Window(); var inner=void; var innerAccepted=false;",
++    );
++    let weak = Rc::downgrade(&env);
++    let restored = Rc::new(Cell::new(None));
++    let observation = Rc::clone(&restored);
++    let depth = Rc::new(Cell::new(0));
++    let nesting = Rc::clone(&depth);
++    env.modal_driver(Some(Rc::new(move |id| {
++        let env = live(&weak)?;
++        if nesting.get() == 0 {
++            nesting.set(1);
++            execute(&env, "inner=new Window(); inner.showModal();")?;
++            // reference/cpp/core/environ/impl/TVPWindow.cpp:498-524 —
++            // the outer dialog remains modal until its own close completes.
++            observation.set(Some((
++                compat::modal_active(&env.compat_context(), id),
++                integer(&env, "innerAccepted")?,
++            )));
++            execute(&env, "outer.close();")?;
++        } else {
++            execute(&env, "innerAccepted=true; inner.close();")?;
++        }
++        Ok(())
++    })));
++    env.run("outer.showModal();");
++    // reference/cpp/core/environ/impl/TVPWindow.cpp:475-524 — closing
++    // nested dialogs restores the previous live window in order.
++    assert_eq!(restored.get(), Some((true, 1)));
++    assert_eq!(env.eval_int("main.visible"), 1);
++    assert_eq!(env.eval_int("outer.visible"), 0);
++    assert_eq!(env.eval_int("inner.visible"), 0);
++}
+diff --git a/crates/engine/src/engine.rs b/crates/engine/src/engine.rs
+--- a/crates/engine/src/engine.rs
++++ b/crates/engine/src/engine.rs
+@@ -759,11 +759,11 @@
+         clock: &dyn FrameTimeSource,
+         hooks: &mut dyn GameFrame,
+     ) -> Result<FrameReport, EngineError> {
+-        let dt_ms = clock.elapsed_ms().max(0.0);
+-        // The clock keeps the sub-millisecond remainder, so a 60 fps frame
+-        // does not lose most of a millisecond on every frame.
+-        let now_ms = self.clock.advance(dt_ms);
+-        self.run_frame(now_ms, dt_ms, hooks)
++        let (now_ms, dt_ms) = self.advance(clock);
++        hooks
++            .before_render(now_ms, dt_ms)
++            .map_err(EngineError::Frame)?;
++        self.present(hooks)
+     }
+ 
+     /// Advances the frame clock by `dt_ms` and draws one frame.
+@@ -824,18 +824,43 @@
+         dt_ms: f64,
+         hooks: &mut dyn GameFrame,
+     ) -> Result<FrameReport, EngineError> {
++        self.prepare_frame(now_ms);
++        hooks
++            .before_render(now_ms, dt_ms)
++            .map_err(EngineError::Frame)?;
++        self.present(hooks)
++    }
++
++    /// Advances the clock, fires due timers and publishes completed reads.
++    ///
++    /// Returns `(now_ms, dt_ms)`. Script execution may run after this method
++    /// returns, without retaining a mutable borrow of the engine. Complete
++    /// the frame with [`Self::present`] before advancing again.
++    pub fn advance(&mut self, clock: &dyn FrameTimeSource) -> (u64, f64) {
++        let dt_ms = clock.elapsed_ms().max(0.0);
++        let now_ms = self.clock.advance(dt_ms);
++        self.prepare_frame(now_ms);
++        (now_ms, dt_ms)
++    }
++
++    fn prepare_frame(&mut self, now_ms: u64) {
+         self.last_now_ms = Some(now_ms);
+         self.sync_presentation();
+         deliver_due(&mut self.timer, now_ms);
+-        // The storage barrier: the reads the previous frame scheduled are
+-        // published before the hook runs, so a read the script makes now
+-        // finds its result ready.
+         if let Some(pool) = &self.storage_pool {
+             pool.drain();
+         }
+-        hooks
+-            .before_render(now_ms, dt_ms)
+-            .map_err(EngineError::Frame)?;
++    }
++
++    /// Projects and draws the scene after the current frame's script work.
++    ///
++    /// Does not advance time or invoke `before_render`. The projection hook
++    /// may finish transitions before the final draw.
++    ///
++    /// # Errors
++    /// Returns a render, overlay or projection-hook failure.
++    pub fn present(&mut self, hooks: &mut dyn GameFrame) -> Result<FrameReport, EngineError> {
++        let now_ms = self.clock.now_ms();
+         // The image barrier: every image the hook queued is decoded before
+         // the upload and the projection, so the frame draws decoded pixels.
+         // The decodes run concurrently, so the wait is the time the last one
+@@ -1117,7 +1142,10 @@
+             }
+         }
+ 
+-        let window_client_size = self.scene.windows.first().map(|window| window.inner_size);
++        let window_client_size = self
++            .scene
++            .presentation_window()
++            .map(|window| window.inner_size);
+         if window_client_size != self.last_window_client_size {
+             // The first observation asks for a window resize only when the
+             // client size already differs from the framebuffer; every later
+@@ -1262,11 +1290,11 @@
+         self.surface_size
+     }
+ 
+-    /// Returns the script-visible screen size: the first window's primary-layer
++    /// Returns the script-visible screen size: the presentation window's primary-layer
+     /// rect, the window's client size while it has no primary layer, or the
+     /// framebuffer size when the scene has no window.
+     pub fn vm_size(&self) -> (u32, u32) {
+-        let Some(window) = self.scene.windows.first() else {
++        let Some(window) = self.scene.presentation_window() else {
+             return self.surface_size;
+         };
+         match window
+diff --git a/crates/engine/src/projection.rs b/crates/engine/src/projection.rs
+--- a/crates/engine/src/projection.rs
++++ b/crates/engine/src/projection.rs
+@@ -406,6 +406,7 @@
+         return;
+     }
+     let win_opacity = clamp_opacity(window_state.opacity);
++    let origin = scene.window_origin(window);
+ 
+     // Per-window composition state, keyed by layer id. Both maps only ever
+     // hold this window's layers, so a cross-window `parent` link simply misses
+@@ -481,7 +482,7 @@
+             .parent
+             .and_then(|parent| composed.get(&parent).copied())
+             .unwrap_or(ComposedLayer {
+-                rect: Rect::default(),
++                rect: Rect::new(origin.0, origin.1, 0, 0),
+                 opacity: 1.0,
+                 visible: true,
+                 clip: None,
+diff --git a/crates/engine/src/scene.rs b/crates/engine/src/scene.rs
+--- a/crates/engine/src/scene.rs
++++ b/crates/engine/src/scene.rs
+@@ -40,6 +40,8 @@
+     /// Window client size in pixels (`Window.width`/`innerWidth`). It is not
+     /// the logical screen: that is the primary layer's rect.
+     pub inner_size: (u32, u32),
++    /// Desktop-space client origin; projection is relative to the main window.
++    pub position: (i32, i32),
+     /// Whether the host shows the window.
+     pub visible: bool,
+     /// Window opacity in `0.0..=1.0`.
+@@ -989,6 +991,7 @@
+             id,
+             title: title.into(),
+             inner_size,
++            position: (0, 0),
+             visible: true,
+             opacity: 1.0,
+             primary_layer: None,
+@@ -1011,6 +1014,25 @@
+             return Some(window);
+         }
+         self.windows.iter().find(|w| w.id == id)
++    }
++
++    /// The oldest surviving window, independent of stacking order.
++    pub fn presentation_window(&self) -> Option<&WindowState> {
++        self.windows.iter().min_by_key(|window| window.id)
++    }
++
++    /// A window's client origin in the presentation window's coordinate space.
++    pub fn window_origin(&self, id: u32) -> (i32, i32) {
++        let Some(window) = self.window(id) else {
++            return (0, 0);
++        };
++        let Some(main) = self.presentation_window() else {
++            return (0, 0);
++        };
++        (
++            window.position.0.saturating_sub(main.position.0),
++            window.position.1.saturating_sub(main.position.1),
++        )
+     }
+ 
+     /// Mutably look up a window by id, bumping [`Scene::structure_revision`].
+diff --git a/crates/engine/tests/engine.rs b/crates/engine/tests/engine.rs
+--- a/crates/engine/tests/engine.rs
++++ b/crates/engine/tests/engine.rs
+@@ -844,3 +844,18 @@
+     engine.step(1.0, &mut hooks).expect("frame");
+     assert_eq!(engine.object_counts().textures, 1);
+ }
++
++#[test]
++fn split_frame_allows_script_work_between_advance_and_present() {
++    let mut engine = headless_engine((640, 480));
++    let window = engine.scene_mut().add_window(String::new(), (640, 480));
++    // reference/cpp/core/environ/impl/TVPWindow.cpp:498-524 — nested
++    // modal dispatch updates the scene between host clock and presentation.
++    let (now_ms, delta_ms) = engine.advance(&engine::clock::InjectedFrameTime::new(20.0));
++    assert_eq!((now_ms, delta_ms), (20, 20.0));
++    let layer = drawable_layer(&mut engine, window);
++    let report = engine.present(&mut Recorder::default()).expect("present");
++    assert_eq!(report.frame_index, 1);
++    assert!(engine.scene().layer(layer).is_some());
++    assert!(!drawn_dsts(&engine).is_empty());
++}
+diff --git a/crates/platform/platform/Cargo.toml b/crates/platform/platform/Cargo.toml
+--- a/crates/platform/platform/Cargo.toml
++++ b/crates/platform/platform/Cargo.toml
+@@ -10,6 +10,7 @@
+ raw-window-handle = { workspace = true }
+ thiserror = { workspace = true }
+ log = { workspace = true }
++corosensei = "=0.3.4"
+ winit = { workspace = true, optional = true }
+ # The software presenter: the platform's own way to put a CPU frame on the
+ # screen without a GPU. It talks to the display server directly (X11 through
+diff --git a/crates/platform/platform/src/execution.rs b/crates/platform/platform/src/execution.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/platform/platform/src/execution.rs
+@@ -0,0 +1,8 @@
++//! Same-thread stackful execution for hosts that suspend a synchronous call.
++//!
++//! A suspended call preserves its stack until the owner resumes it. Hosts
++//! must complete foreign calls normally before dropping their coroutine;
++//! forced unwinding is not a substitute for their cancellation protocol.
++
++pub use corosensei::stack::DefaultStack;
++pub use corosensei::{Coroutine, CoroutineResult, Yielder};
+diff --git a/crates/platform/platform/src/lib.rs b/crates/platform/platform/src/lib.rs
+--- a/crates/platform/platform/src/lib.rs
++++ b/crates/platform/platform/src/lib.rs
+@@ -50,6 +50,7 @@
+ mod audio_queue;
+ mod clock;
+ mod event;
++pub mod execution;
+ mod fonts;
+ mod input;
+ mod memory;
+diff --git a/crates/vm/src/host.rs b/crates/vm/src/host.rs
+--- a/crates/vm/src/host.rs
++++ b/crates/vm/src/host.rs
+@@ -7,12 +7,15 @@
+ //! [`VmHost::with_default_services`] before the surface is installed.
+ #![allow(unsafe_code)]
+ 
++use std::cell::Cell;
+ use std::ffi::{CStr, c_char, c_int, c_void};
+ use std::ptr;
++use std::rc::Rc;
+ use std::time::{Instant, SystemTime, UNIX_EPOCH};
+ 
+ use compat::{CompatHost, EventAdapter, FrameBody, PluginRegistry, run_frame_body};
+ use platform::PlatformEvent;
++use platform::execution::{Coroutine, CoroutineResult, DefaultStack, Yielder};
+ use tjs::{LOG_DEBUG, LOG_ERROR, LOG_INFO, LOG_WARN, Tjs2Engine, TjsValue};
+ 
+ use crate::VmError;
+@@ -34,18 +37,24 @@
+ 
+ /// The TJS VM host (L4).
+ ///
+-/// Owns the script engine (boxed so its address is stable for the L3 binding)
+-/// and the L3 [`CompatHost`] that holds the native surface state. The fields
+-/// are ordered so the engine is dropped last: the dispatch state retains
+-/// values whose `Drop` releases an id on the engine.
++/// Shares the stable script engine and L3 [`CompatHost`] with its frame
++/// runner. The dispatch state is released before the engine when the final
++/// owner drops. Direct ticks use this host's independent event adapter.
+ pub struct VmHost {
++    core: Rc<Core>,
++    adapter: EventAdapter,
++}
++
++struct Core {
+     /// The L3 dispatch state. Declared before `engine` so its retained values
+     /// are released first (fields drop in declaration order).
+     compat: CompatHost,
+-    adapter: EventAdapter,
+     /// The per-host VM log deduplicator. The engine's log callback points at
+     /// this boxed value, so its address stays stable while the host moves.
+     log_dedup: Box<LogDedup>,
++    runner_claimed: Cell<bool>,
++    invocation_active: Cell<bool>,
++    stopping: Cell<bool>,
+     /// The script engine. Declared last so it outlives every value the native
+     /// state retains.
+     engine: Box<Tjs2Engine>,
+@@ -379,10 +388,15 @@
+         attach(compat.services_mut());
+         compat.install(&engine)?;
+         Ok(Self {
+-            compat,
++            core: Rc::new(Core {
++                compat,
++                log_dedup,
++                engine,
++                runner_claimed: Cell::new(false),
++                invocation_active: Cell::new(false),
++                stopping: Cell::new(false),
++            }),
+             adapter: EventAdapter::new(),
+-            log_dedup,
+-            engine,
+         })
+     }
+ 
+@@ -392,7 +406,7 @@
+     /// valid for the whole life of the host. The engine is single-threaded:
+     /// it is used from the one thread that owns the host.
+     pub fn engine(&self) -> &Tjs2Engine {
+-        &self.engine
++        &self.core.engine
+     }
+ 
+     /// The L3 compatibility host.
+@@ -400,7 +414,7 @@
+     /// The host owns the native dispatch state and the plugin registry; it
+     /// is installed against the engine when the host is created.
+     pub fn compat(&self) -> &CompatHost {
+-        &self.compat
++        &self.core.compat
+     }
+ 
+     /// Execute a TJS script.
+@@ -409,7 +423,8 @@
+     /// failure is reported as [`VmError::Script`], whose message carries
+     /// the block name and the line.
+     pub fn exec(&self, source: &str, name: &str) -> Result<TjsValue, VmError> {
+-        self.engine
++        self.core
++            .engine
+             .exec_script(source, name)
+             .map_err(|err| VmError::Script(err.to_string()))
+     }
+@@ -419,7 +434,8 @@
+     /// `name` labels the block in a failure message; a compile or runtime
+     /// failure is reported as [`VmError::Script`].
+     pub fn eval(&self, expression: &str, name: &str) -> Result<TjsValue, VmError> {
+-        self.engine
++        self.core
++            .engine
+             .eval(expression, name)
+             .map_err(|err| VmError::Script(err.to_string()))
+     }
+@@ -430,27 +446,234 @@
+     /// The events are delivered before the polls run, so a script sees this
+     /// frame's input before any poll advances. A failure in the event
+     /// dispatch or in a poll is reported as [`VmError::Compat`]; the polls
+-    /// after the failing one do not run.
++    /// after the failing one do not run. A frame runner that currently owns
++    /// this host rejects direct ticks with [`VmError::Vm`].
+     pub fn tick(&mut self, frame: FrameCtx<'_>) -> Result<(), VmError> {
++        if self.core.runner_claimed.get() {
++            return Err(VmError::Vm("a frame runner owns this host".into()));
++        }
++        self.core.tick(&mut self.adapter, frame)
++    }
++
++    /// Create a same-thread frame runner with its own adapter and poll body.
++    ///
++    /// The factory creates an independent body for each nested modal loop.
++    /// A frame returns after presentation can proceed, even when a script is
++    /// waiting in `Window.showModal`. Only one runner may own this host at a
++    /// time; a second runner reports an error from its first step.
++    /// The stack reserves 8 MiB, matching the desktop thread's stack budget.
++    ///
++    /// # Errors
++    ///
++    /// Returns an allocation error when the invocation stack cannot be reserved.
++    pub fn frame_runner<B: FrameBody + 'static>(
++        &self,
++        factory: impl Fn() -> B + 'static,
++    ) -> Result<FrameRunner, VmError> {
++        FrameRunner::new(Rc::clone(&self.core), factory)
++    }
++}
++
++impl Core {
++    fn tick(&self, adapter: &mut EventAdapter, frame: FrameCtx<'_>) -> Result<(), VmError> {
+         let mut ctx = self.compat.ctx()?;
+         // The input state is per-frame: clear it, fold in every raw event,
+         // then commit so held/repeat counters advance exactly once (doc 08 §6).
+         // Each segment reports its wall-clock cost through the body hooks.
+         let started = Instant::now();
+-        self.adapter.begin_input_frame(&mut ctx);
++        adapter.begin_input_frame(&mut ctx);
+         frame.body.input_begin_completed(started.elapsed());
+         let started = Instant::now();
+-        self.adapter.dispatch_frame(&mut ctx, frame.events)?;
++        adapter.dispatch_frame(&mut ctx, frame.events)?;
+         frame.body.input_events_completed(started.elapsed());
+         let started = Instant::now();
+-        self.adapter.end_input_frame(&mut ctx);
++        adapter.end_input_frame(&mut ctx);
+         frame.body.input_end_completed(started.elapsed());
+         run_frame_body(frame.body, &mut ctx)?;
+         Ok(())
+     }
+ }
+ 
+-impl Drop for VmHost {
++enum FrameInput {
++    Events(Vec<PlatformEvent>),
++    Cancel,
++}
++
++type FrameCoroutine = Coroutine<FrameInput, (), Result<(), VmError>>;
++
++const FRAME_STACK_BYTES: usize = 8 * 1024 * 1024;
++
++/// A same-thread frame invocation that preserves synchronous modal callers.
++///
++/// The owner advances engine time before [`Self::step`] and presents the
++/// scene after it returns. The runner owns its script stack and never moves
++/// it to a worker thread. Shutdown resumes every waiting native call through
++/// its ordinary error path before releasing that stack.
++pub struct FrameRunner {
++    coroutine: FrameCoroutine,
++    core: Rc<Core>,
++}
++
++impl FrameRunner {
++    fn new<B: FrameBody + 'static>(
++        core: Rc<Core>,
++        factory: impl Fn() -> B + 'static,
++    ) -> Result<Self, VmError> {
++        let stack = DefaultStack::new(FRAME_STACK_BYTES).map_err(|error| {
++            VmError::Vm(format!("cannot reserve an 8 MiB frame stack: {error}"))
++        })?;
++        let running = Rc::clone(&core);
++        let coroutine = Coroutine::with_stack(stack, move |yielder, mut input| {
++            if running.runner_claimed.replace(true) {
++                return Err(VmError::Vm("a frame runner already owns this host".into()));
++            }
++            running.stopping.set(false);
++            let _guard = RunnerGuard(Rc::clone(&running));
++            let weak = Rc::downgrade(&running);
++            let factory = Rc::new(factory);
++            let modal_factory = Rc::clone(&factory);
++            let yielder_ptr = yielder as *const Yielder<FrameInput, ()>;
++            running.compat.set_modal_driver(Some(Rc::new(move |window| {
++                let core = weak.upgrade().ok_or_else(|| {
++                    compat::CompatError::Engine("the frame runner has stopped".into())
++                })?;
++                if !core.invocation_active.get() {
++                    return Err(compat::CompatError::Engine(
++                        "modal calls require an active frame invocation".into(),
++                    ));
++                }
++                // SAFETY: the driver is installed only while this coroutine's
++                // stack owns the yielder. The active-invocation check excludes
++                // calls from its parent stack, and RunnerGuard removes the
++                // driver before the coroutine completes. Execution stays on
++                // the creating thread.
++                let yielder = unsafe { &*yielder_ptr };
++                core.run_modal(window, yielder, modal_factory.as_ref())
++            })));
++            let mut adapter = EventAdapter::new();
++            loop {
++                let FrameInput::Events(events) = input else {
++                    return Ok(());
++                };
++                running.invocation_active.set(true);
++                {
++                    let mut body = factory();
++                    running.tick(
++                        &mut adapter,
++                        FrameCtx {
++                            body: &mut body,
++                            events: &events,
++                        },
++                    )?;
++                }
++                if running.stopping.get() {
++                    return Ok(());
++                }
++                input = running.suspend(yielder);
++            }
++        });
++        Ok(Self { coroutine, core })
++    }
++
++    /// Deliver one frame's input and allow the scene to be presented.
++    ///
++    /// # Errors
++    ///
++    /// Returns the script or poll failure, or an ownership error when a
++    /// different runner already owns this host or this runner has stopped.
++    pub fn step(&mut self, events: &[PlatformEvent]) -> Result<(), VmError> {
++        if self.coroutine.done() {
++            return Err(VmError::Vm("the frame runner has stopped".into()));
++        }
++        match self.coroutine.resume(FrameInput::Events(events.to_vec())) {
++            CoroutineResult::Yield(()) => Ok(()),
++            CoroutineResult::Return(result) => result,
++        }
++    }
++
++    /// Cancel waiting modal calls and complete the script stack normally.
++    ///
++    /// # Errors
++    ///
++    /// Returns a script or poll failure observed while cancellation drains
++    /// the invocation. Completed runners need no further shutdown work.
++    pub fn shutdown(&mut self) -> Result<(), VmError> {
++        if self.coroutine.done() {
++            return Ok(());
++        }
++        if self.coroutine.started() {
++            self.core.stopping.set(true);
++        }
++        loop {
++            match self.coroutine.resume(FrameInput::Cancel) {
++                CoroutineResult::Yield(()) => {}
++                CoroutineResult::Return(result) => return result,
++            }
++        }
++    }
++}
++
++impl Drop for FrameRunner {
++    fn drop(&mut self) {
++        if let Err(error) = self.shutdown() {
++            log::debug!("frame runner shutdown: {error}");
++        }
++    }
++}
++
++struct RunnerGuard(Rc<Core>);
++
++impl Drop for RunnerGuard {
++    fn drop(&mut self) {
++        self.0.compat.set_modal_driver(None);
++        self.0.invocation_active.set(false);
++        self.0.runner_claimed.set(false);
++    }
++}
++
++impl Core {
++    fn suspend(&self, yielder: &Yielder<FrameInput, ()>) -> FrameInput {
++        if self.stopping.get() {
++            return FrameInput::Cancel;
++        }
++        self.invocation_active.set(false);
++        let input = yielder.suspend(());
++        self.invocation_active.set(true);
++        input
++    }
++
++    fn run_modal<B: FrameBody>(
++        &self,
++        window: u32,
++        yielder: &Yielder<FrameInput, ()>,
++        factory: &impl Fn() -> B,
++    ) -> Result<(), compat::CompatError> {
++        let ctx = self.compat.ctx()?;
++        let mut adapter = EventAdapter::new();
++        while compat::modal_active(&ctx, window) {
++            let FrameInput::Events(events) = self.suspend(yielder) else {
++                return Err(compat::CompatError::Engine(
++                    "modal invocation cancelled".into(),
++                ));
++            };
++            if !compat::modal_active(&ctx, window) {
++                break;
++            }
++            let mut body = factory();
++            self.tick(
++                &mut adapter,
++                FrameCtx {
++                    body: &mut body,
++                    events: &events,
++                },
++            )
++            .map_err(|error| compat::CompatError::Engine(error.to_string()))?;
++        }
++        Ok(())
++    }
++}
++
++impl Drop for Core {
+     fn drop(&mut self) {
+         // Release the native state's retained values while the engine is
+         // still alive, then remove the binding. Dropping the state after the
+diff --git a/crates/vm/src/lib.rs b/crates/vm/src/lib.rs
+--- a/crates/vm/src/lib.rs
++++ b/crates/vm/src/lib.rs
+@@ -19,7 +19,7 @@
+ 
+ mod host;
+ 
+-pub use host::{FrameCtx, VmHost};
++pub use host::{FrameCtx, FrameRunner, VmHost};
+ 
+ /// Errors from the VM host.
+ #[derive(Debug, thiserror::Error)]
+diff --git a/crates/vm/tests/modal_frames.rs b/crates/vm/tests/modal_frames.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/vm/tests/modal_frames.rs
+@@ -0,0 +1,314 @@
++//! A synchronous script dialog remains suspended between host frames.
++//!
++//! reference/cpp/core/environ/impl/TVPWindow.cpp:498-524
++//! reference/cpp/core/visual/impl/WindowImpl.cpp:1505-1512
++
++use std::cell::Cell;
++use std::rc::Rc;
++use std::sync::Once;
++
++use compat::{CompatCtx, CompatError, FrameBody};
++use engine::Scene;
++use engine::clock::FrameClock;
++use engine::input::InputState;
++use engine::timer::{TimerState, deliver_due};
++use platform::{InputEvent, PhysicalKey, PlatformEvent};
++use testkit::vm_lock;
++use tjs::TjsValue;
++use vm::{FrameCtx, FrameRunner, VmHost};
++
++const DIALOG: &str = r#"
++var resumed = 0, answer = -1, active = void, cancelled = 0;
++class Dialog extends Window {
++    var result = false;
++    var surface = void;
++    function Dialog() {
++        super.Window();
++        setInnerSize(80, 60);
++        surface = new Layer(this, null);
++        surface.setSize(80, 60);
++        surface.visible = true;
++    }
++    function onKeyDown(key, shift) {
++        result = key == 13;
++        close();
++    }
++}
++function ask() {
++    active = new Dialog();
++    active.showModal();
++    answer = int active.result;
++    invalidate active;
++    resumed++;
++}
++"#;
++
++struct DiagnosticLog;
++
++impl log::Log for DiagnosticLog {
++    fn enabled(&self, metadata: &log::Metadata) -> bool {
++        metadata.level() <= log::Level::Warn
++    }
++
++    fn log(&self, record: &log::Record) {
++        if self.enabled(record.metadata()) {
++            eprintln!("{}", record.args());
++        }
++    }
++
++    fn flush(&self) {}
++}
++
++struct Harness {
++    vm: VmHost,
++    scene: Box<Scene>,
++    timer: Box<TimerState>,
++    clock: Box<FrameClock>,
++    _input: Box<InputState>,
++}
++
++impl Harness {
++    fn new() -> Self {
++        static LOG: DiagnosticLog = DiagnosticLog;
++        static INSTALL: Once = Once::new();
++        INSTALL.call_once(|| {
++            log::set_logger(&LOG).expect("install test diagnostics");
++            log::set_max_level(log::LevelFilter::Warn);
++        });
++        let mut scene = Box::<Scene>::default();
++        let mut timer = Box::new(TimerState::new());
++        let mut clock = Box::new(FrameClock::new());
++        let mut input = Box::new(InputState::new());
++        let vm = VmHost::with_default_services(|services| {
++            // SAFETY: all attached values are boxed, retain their addresses,
++            // and are declared after the VM in Harness so they outlive it.
++            unsafe {
++                services.attach_scene(scene.as_mut());
++                services.attach_timer(timer.as_mut());
++                services.attach_clock(clock.as_mut());
++                services.attach_input(input.as_mut());
++            }
++        })
++        .expect("create VM");
++        vm.exec(DIALOG, "modal-fixture").expect("install dialog");
++        Self {
++            vm,
++            scene,
++            timer,
++            clock,
++            _input: input,
++        }
++    }
++
++    fn runner(&self, script: &'static str) -> FrameRunner {
++        let started = Rc::new(Cell::new(false));
++        self.vm
++            .frame_runner(move || ScriptBody {
++                script,
++                started: Rc::clone(&started),
++            })
++            .expect("reserve frame stack")
++    }
++
++    fn value(&self, name: &str) -> TjsValue {
++        self.vm.eval(name, "modal-check").expect("read fixture")
++    }
++
++    fn advance(&mut self, now_ms: u64) {
++        self.clock.set(now_ms);
++        deliver_due(&mut self.timer, now_ms);
++    }
++}
++
++struct ScriptBody {
++    script: &'static str,
++    started: Rc<Cell<bool>>,
++}
++
++impl FrameBody for ScriptBody {
++    fn continuous_handler_poll(&mut self, ctx: &mut CompatCtx) -> Result<(), CompatError> {
++        if self.started.replace(true) {
++            return Ok(());
++        }
++        // SAFETY: a live compat context borrows the VM bound to this host;
++        // no mutable service borrow is retained during script execution.
++        unsafe { ctx.engine() }
++            .exec_script(self.script, "modal-test")
++            .map(|_| ())
++            .map_err(|error| CompatError::Engine(error.to_string()))
++    }
++}
++
++fn press(code: PhysicalKey) -> PlatformEvent {
++    PlatformEvent::Input(InputEvent::Key {
++        code,
++        pressed: true,
++    })
++}
++
++#[test]
++fn modal_waits_for_yes_or_no_before_its_caller_resumes() {
++    let _lock = vm_lock();
++    for (key, expected) in [(PhysicalKey::Enter, 1), (PhysicalKey::Escape, 0)] {
++        let harness = Harness::new();
++        let mut runner = harness.runner("ask();");
++        runner.step(&[]).expect("open dialog");
++        // reference/cpp/core/environ/impl/TVPWindow.cpp:498-524
++        assert_eq!(harness.value("resumed"), TjsValue::Integer(0));
++        assert!(harness.scene.windows.iter().any(|window| window.visible));
++        runner.step(&[]).expect("present unchanged dialog");
++        // reference/cpp/core/environ/impl/TVPWindow.cpp:498-524
++        assert_eq!(harness.value("resumed"), TjsValue::Integer(0));
++        runner.step(&[press(key)]).expect("answer dialog");
++        // reference/cpp/core/environ/impl/TVPWindow.cpp:988-1000
++        assert_eq!(harness.value("answer"), TjsValue::Integer(expected));
++        assert_eq!(harness.value("resumed"), TjsValue::Integer(1));
++        runner.shutdown().expect("stop runner");
++        drop(runner);
++        drop(harness);
++    }
++}
++
++#[test]
++fn modal_services_timer_callbacks_while_waiting() {
++    let _lock = vm_lock();
++    let mut harness = Harness::new();
++    let mut runner = harness.runner(
++        "var closer = new Timer(function() { closer.enabled = false; \
++         active.result = true; active.close(); }, ''); \
++         closer.interval = 20; closer.enabled = true; ask();",
++    );
++    runner.step(&[]).expect("open timer dialog");
++    // reference/cpp/core/environ/impl/TVPWindow.cpp:498-524
++    assert_eq!(harness.value("resumed"), TjsValue::Integer(0));
++    harness.advance(20);
++    runner.step(&[]).expect("deliver timer");
++    // reference/cpp/core/environ/impl/TVPWindow.cpp:498-524
++    assert_eq!(harness.value("answer"), TjsValue::Integer(1));
++    assert_eq!(harness.value("resumed"), TjsValue::Integer(1));
++}
++
++#[test]
++fn nested_modal_completes_before_its_outer_caller() {
++    let _lock = vm_lock();
++    let harness = Harness::new();
++    harness
++        .vm
++        .exec(
++            "var inner = void; class Outer extends Dialog { \
++             function Outer() { super.Dialog(); } \
++             function onKeyDown(key, shift) { global.inner = new global.Dialog(); \
++             global.inner.showModal(); result = global.inner.result; \
++             invalidate global.inner; close(); } }",
++            "nested-fixture",
++        )
++        .expect("install outer dialog");
++    let mut runner = harness.runner(
++        "active = new Outer(); active.showModal(); answer = int active.result; \
++         invalidate active; resumed++;",
++    );
++    runner.step(&[]).expect("open outer dialog");
++    runner
++        .step(&[press(PhysicalKey::Enter)])
++        .expect("open inner dialog");
++    // reference/cpp/core/environ/impl/TVPWindow.cpp:498-524
++    assert_eq!(harness.value("resumed"), TjsValue::Integer(0));
++    runner
++        .step(&[press(PhysicalKey::Enter)])
++        .expect("answer inner dialog");
++    // reference/cpp/core/environ/impl/TVPWindow.cpp:988-1000
++    assert_eq!(
++        harness.value("answer"),
++        TjsValue::Integer(1),
++        "inner result={:?}, inner visible={:?}, outer result={:?}, outer visible={:?}, windows={:?}",
++        harness.vm.eval("inner.result", "nested-diagnostic"),
++        harness.vm.eval("inner.visible", "nested-diagnostic"),
++        harness.vm.eval("active.result", "nested-diagnostic"),
++        harness.vm.eval("active.visible", "nested-diagnostic"),
++        harness.scene.windows,
++    );
++    assert_eq!(harness.value("resumed"), TjsValue::Integer(1));
++}
++
++#[test]
++fn shutdown_returns_through_the_native_error_path() {
++    let _lock = vm_lock();
++    let harness = Harness::new();
++    let mut runner = harness.runner("try { ask(); } catch(e) { cancelled = 1; }");
++    runner.step(&[]).expect("open dialog");
++    runner.shutdown().expect("cooperative shutdown");
++    // reference/cpp/core/environ/impl/TVPWindow.cpp:511-515
++    assert_eq!(harness.value("cancelled"), TjsValue::Integer(1));
++    assert_eq!(harness.value("resumed"), TjsValue::Integer(0));
++    drop(runner);
++    // reference/cpp/core/visual/impl/WindowImpl.cpp:1505-1512
++    assert!(
++        harness
++            .vm
++            .eval("(new Dialog()).showModal()", "no-driver")
++            .is_err()
++    );
++}
++
++#[test]
++fn an_unused_runner_cannot_cancel_the_active_runner() {
++    let _lock = vm_lock();
++    let harness = Harness::new();
++    let mut runner = harness.runner("ask();");
++    runner.step(&[]).expect("open dialog");
++    drop(harness.runner("ask();"));
++    let mut rejected = harness.runner("ask();");
++    // reference/cpp/core/environ/impl/TVPWindow.cpp:498-524
++    assert!(rejected.step(&[]).is_err());
++    drop(rejected);
++    runner
++        .step(&[press(PhysicalKey::Enter)])
++        .expect("answer dialog");
++    // reference/cpp/core/environ/impl/TVPWindow.cpp:498-524
++    assert_eq!(harness.value("answer"), TjsValue::Integer(1));
++}
++
++#[test]
++fn startup_modal_without_a_frame_driver_reports_an_error() {
++    let _lock = vm_lock();
++    let harness = Harness::new();
++    // reference/cpp/core/visual/impl/WindowImpl.cpp:1505-1512
++    assert!(harness.vm.exec("ask();", "startup-modal").is_err());
++    assert_eq!(harness.value("resumed"), TjsValue::Integer(0));
++}
++
++#[test]
++fn a_direct_tick_cannot_bypass_a_paused_frame_runner() {
++    let _lock = vm_lock();
++    let mut harness = Harness::new();
++    let mut runner = harness.runner("ask();");
++    runner.step(&[]).expect("open dialog");
++    let mut body = ScriptBody {
++        script: "resumed = 99;",
++        started: Rc::new(Cell::new(false)),
++    };
++    // reference/cpp/core/environ/impl/TVPWindow.cpp:498-524
++    assert!(
++        harness
++            .vm
++            .tick(FrameCtx {
++                body: &mut body,
++                events: &[],
++            })
++            .is_err()
++    );
++    assert_eq!(harness.value("resumed"), TjsValue::Integer(0));
++    runner
++        .step(&[press(PhysicalKey::Enter)])
++        .expect("answer dialog");
++    runner.shutdown().expect("release frame ownership");
++    harness
++        .vm
++        .tick(FrameCtx {
++            body: &mut body,
++            events: &[],
++        })
++        .expect("direct tick after shutdown");
++    // reference/cpp/core/environ/impl/TVPWindow.cpp:498-524
++    assert_eq!(harness.value("resumed"), TjsValue::Integer(99));
++}
+diff --git a/docs/arch/l2.md b/docs/arch/l2.md
+--- a/docs/arch/l2.md
++++ b/docs/arch/l2.md
+@@ -204,6 +204,10 @@
+ ---
+ 
+ ## 4. Presentation and the pixel-translation layer
++
++The oldest live scene window is the presentation window, independent of
++stacking order. Other window origins are relative to its desktop position,
++so raising a centered dialog preserves the main screen size.
+ 
+ The scene is described in VM pixels and drawn in device pixels; the host's
+ window client is a third space. This section is where those meet.
+diff --git a/docs/arch/l4.md b/docs/arch/l4.md
+--- a/docs/arch/l4.md
++++ b/docs/arch/l4.md
+@@ -57,7 +57,7 @@
+ ## 2. `crates/vm` — the host
+ 
+ ```rust
+-pub struct VmHost { /* the boxed C++ engine + the L3 CompatHost */ }
++pub struct VmHost { /* shared stable core and direct-call event adapter */ }
+ 
+ impl VmHost {
+     pub fn with_default() -> Result<Self, VmError>;
+@@ -68,14 +68,17 @@
+     pub fn exec(&self, source: &str, name: &str) -> Result<TjsValue, VmError>;
+     pub fn eval(&self, expression: &str, name: &str) -> Result<TjsValue, VmError>;
+     pub fn tick(&mut self, frame: FrameCtx<'_>) -> Result<(), VmError>;
++    pub fn frame_runner<B: FrameBody + 'static>(
++        &self, factory: impl Fn() -> B + 'static,
++    ) -> Result<FrameRunner, VmError>;
+ }
+ ```
+ 
+-`VmHost` owns:
++`VmHost` and its optional `FrameRunner` share an `Rc` core containing:
+ 
+ * the `Tjs2Engine`, boxed so its address stays stable for the L3 binding;
+ * the `CompatHost` that holds the native surface state;
+-* the `EventAdapter` that turns platform events into script events;
++* the direct-call `EventAdapter` stays with `VmHost`; each frame runner and nested modal loop owns an independent adapter;
+ * the per-host log deduplicator.
+ 
+ **Drop order matters.** The fields are declared so the engine is dropped
+@@ -94,8 +97,6 @@
+ 
+ ```rust
+ pub struct FrameCtx<'a> {
+-    pub now_ms: u64,
+-    pub dt_ms: u32,
+     pub body: &'a mut dyn FrameBody,
+     pub events: &'a [PlatformEvent],
+ }
+@@ -114,13 +115,41 @@
+ Each segment reports its wall-clock cost through the `FrameBody` hooks, which
+ is how the composition root attributes a slow frame.
+ 
+-The engine owns the clock: `VmHost` receives `now_ms`/`dt_ms` from the
+-engine's frame and never accumulates a delta of its own. The polls that used
++The engine owns the clock. The VM reads the attached clock and never
++accumulates a delta of its own. The polls that used
+ to be handed a delta read the engine's clock instead — the transition's phase
+ is its tick difference and the picture's step is its elapsed time — so the
+ frame body carries a bound only for deterministic headless audio/video. Live
+ audio is driven by device consumption on a joined producer, sharing only the
+ L2 mixer; it does not discard a stalled frame's elapsed time.
++
++### Modal execution
++
++`FrameRunner` runs synchronous script invocations on one same-thread stack,
++using `corosensei 0.3.4` through the platform execution seam. Its explicit
++8 MiB stack allocation is fallible. No VM pointer crosses threads.
++
++`Window.showModal()` shows and raises the window, suspends the caller and
++returns control to the outer event loop. Each subsequent frame advances
++engine time once, delivers modal input and timers on the suspended stack,
++and yields for presentation. Nested dialogs stay on that same stack and
++complete in reverse order. Every poll body has invocation-local state.
++The modal policy excludes background input and invalidates stale input
++batches when entering or leaving a dialog.
++
++Shutdown resumes the pending native call with a cancellation error and
++finishes every foreign frame normally before the coroutine is dropped;
++forced Rust unwinding across a native ABI frame is forbidden. The frame
++runner is destroyed before engine services in `GameHost`.
++
++Startup scripts still execute before the platform frame runner exists.
++Modal calls from that phase report a missing-driver error; they do not
++silently accept a choice. Self-updating transition completion callbacks
++still run inside the projection hook, outside the frame invocation; modal
++calls from those callbacks also return an explicit error. Supporting those
++entry points requires a frame-capable startup scheduler and a separate
++resumable post-projection phase. Neither limitation is bypassed with a
++fabricated result.
+ 
+ ### Logging
+ 
+diff --git a/docs/code/app/game.md b/docs/code/app/game.md
+--- a/docs/code/app/game.md
++++ b/docs/code/app/game.md
+@@ -13,11 +13,12 @@
+ 
+ ```rust
+ pub struct GameHost {
++    frames: FrameRunner,  // cancelled before attached services are destroyed
+     audio: AudioOutput,     // the L1 device, dropped first
+     vm: VmHost,             // the L4 host, dropped before its targets
+     storage: Box<Storage>,  // the mounted archives
+     host: Box<Host>,        // the L2 engine host
+-    polls: Polls,           // the ordered frame body and its cost record
++    polls: Rc<Cell<(FramePhases, TickPhases)>>, // completed invocation costs
+     open_start: Instant,
+     last_frame: FrameAttribution,
+     first_frame_logged: bool,
+@@ -206,38 +207,32 @@
+ 
+ ---
+ 
+-## 6. The frame hook
+-
+-`VmHook` implements the L2 `GameFrame` trait — the single upward edge of the
+-frame. The engine fires the due timers, then calls `before_render`, then
+-projects and draws.
+-
+-### `before_render(now_ms, dt_ms)`
+-
+-* the frame's `dt` is handed to the frame body;
+-* live movie/video steps use the full elapsed time because audio has an
+-  independent producer; headless steps retain the deterministic playback cap.
+-  The step itself is the engine clock's elapsed time,
+-  which the compatibility layer reads from the clock the composition root
+-  attached;
+-* the position-carrying events are **mapped from device pixels into VM
+-  pixels** through the L2 translation. Only the pointer position and a
+-  touch contact carry a coordinate; buttons, wheels, keys, text, focus and
+-  resize mean the same in both spaces and pass through unchanged, and an
+-  identity translation is skipped entirely;
+-* the VM tick runs: the input frame is cleared, the events are adapted and
+-  dispatched, the frame is committed, and the ordered polls run;
+-* the audio drain runs immediately after the tick.
+-
+-The mapping is the root's job precisely because L3 never sees the
+-translation: an L3 hit-test stays in VM space, and the L3 code keeps its
+-VM-coordinate contract. See [`../rules/arch_rules.md`](../../rules/arch_rules.md) §5.
+-
+-### `after_project(drawn_layers)`
+-
+-The self-updating transitions advance on the projection's own draw report,
+-and the script-cached layers are refreshed, so a transition that is never
+-updated by a script still advances when the projection draws it.
++## 6. Frame execution and presentation
++
++`GameHost::step_with_pacing` separates three phases:
++
++1. `Engine::advance` updates time, posts due timers and publishes reads.
++2. `FrameRunner::step` dispatches script work without an engine borrow.
++3. `Engine::present` resolves images, projects and draws the scene.
++
++Input positions are mapped from device to logical screen pixels before the
++runner resumes. Windows apply their own origin consistently to projection
++and hit testing. The oldest live window owns the presentation size; raising
++a smaller dialog cannot resize the entire host.
++
++The frame runner can yield while a synchronous native dialog waits for
++input. Its script stack owns independent event adapters and fresh poll
++bodies for nested frames. Only the modal window receives input; stale
++trigger batches are discarded when dialog state changes. Continuous-handler
++delivery cannot recursively deliver the same continuous pass.
++
++`ProjectionHook::after_project` completes self-updating transitions from the
++actual draw report and refreshes cached layers before the final draw.
++Audio health/headless draining occurs after each script frame, while live
++audio keeps its independent producer.
++
++The runner is the first `GameHost` field and cooperatively completes pending
++native invocations before audio, VM or attached services are dropped.
+ 
+ ### The frame body
+ 
+diff --git a/scripts/allowlists/house_style_baseline.txt b/scripts/allowlists/house_style_baseline.txt
+--- a/scripts/allowlists/house_style_baseline.txt
++++ b/scripts/allowlists/house_style_baseline.txt
+@@ -3200,7 +3200,6 @@
+ {"path": "crates/compat/src/natives/visual/window.rs", "rule": "reference-citation", "anchor": "// runs (`WindowImpl.cpp:1469-1472`), so a re-entrant `close()` sees no", "reason": "legacy comment, cleanup tracked in TODO §15"}
+ {"path": "crates/compat/src/natives/visual/window.rs", "rule": "reference-citation", "anchor": "// to `LayerTreeOwnerImpl.cpp:385-389` and `LayerManager.h:488-490`):", "reason": "legacy comment, cleanup tracked in TODO §15"}
+ {"path": "crates/compat/src/natives/visual/window.rs", "rule": "reference-citation", "anchor": "// when it cannot (`impl/MenuItemImpl.cpp:66-72`); `HWND` always resolves", "reason": "legacy comment, cleanup tracked in TODO §15"}
+-{"path": "crates/compat/src/natives/visual/window.rs", "rule": "reference-citation", "anchor": "/// (`TVPMainWindow`). It is a static member of the reference `Window` class,", "reason": "legacy comment, cleanup tracked in TODO §15"}
+ {"path": "crates/compat/src/natives/visual/window.rs", "rule": "reference-citation", "anchor": "/// (`reference/cpp/core/base/EventIntf.cpp:709-736`); each", "reason": "legacy comment, cleanup tracked in TODO §15"}
+ {"path": "crates/compat/src/natives/visual/window.rs", "rule": "reference-citation", "anchor": "/// (`reference/cpp/core/base/EventIntf.h:208-238`).", "reason": "legacy comment, cleanup tracked in TODO §15"}
+ {"path": "crates/compat/src/natives/visual/window.rs", "rule": "reference-citation", "anchor": "/// (`reference/cpp/core/base/EventIntf.h:208-238`). The `FuncCall` result is", "reason": "legacy comment, cleanup tracked in TODO §15"}

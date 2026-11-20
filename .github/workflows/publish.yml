@@ -1,0 +1,137 @@
+name: Publish GHCR image
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      promote_version:
+        description: Verified release tag to promote to latest
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: vn-stream-ghcr
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.event_name == 'release' && !github.event.release.prerelease
+    runs-on: ubuntu-24.04
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Check release identity
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
+          python3 - "$RELEASE_TAG" "$GITHUB_REPOSITORY" "$IMAGE" <<'PY'
+          import json
+          import subprocess
+          import sys
+          import tomllib
+          from pathlib import Path
+
+          tag, repository, image = sys.argv[1:]
+          project = tomllib.loads(Path("pyproject.toml").read_text())["project"]
+          web = json.loads(Path("web/package.json").read_text())
+          assert tag == f"v{project['version']}" == f"v{web['version']}"
+
+          compose_file = "compose.yaml"
+          compose_url = f"https://raw.githubusercontent.com/{repository}/HEAD/{compose_file}"
+          compose_yaml = Path(compose_file).read_text().rstrip()
+          for filename in ("README.md", "README_ZH.md"):
+              readme = Path(filename).read_text()
+              assert f"/badge/release-{tag}-" in readme.lower(), filename
+              assert f"curl -fL -o compose.yaml {compose_url}\n" in readme, filename
+              assert f"curl.exe -fL -o compose.yaml {compose_url}\n" in readme, filename
+              assert f"\n```yaml\n{compose_yaml}\n```\n" in readme, filename
+
+          images = subprocess.check_output(
+              ["docker", "compose", "-f", compose_file, "config", "--images"], text=True
+          ).splitlines()
+          assert images == [f"{image}:{tag}"], compose_file
+          PY
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+      - name: Check source and API contract
+        run: |
+          python3 -m venv .venv
+          .venv/bin/python -m pip install -r requirements.lock
+          .venv/bin/ruff check src tests scripts
+          .venv/bin/mypy --follow-imports=silent --check-untyped-defs \
+            src/vn_stream/engines/contracts.py src/vn_stream/storage \
+            src/vn_stream/projects/maintenance.py src/vn_stream/runtimes
+          .venv/bin/python -m pytest -q --hypothesis-profile=ci tests/unit
+          npm --prefix web ci
+          npm --prefix web run check
+          npm --prefix web run contract:check
+      - name: Prepare pinned runtime bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/native-runtimes"
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern native-runtimes-linux-amd64.tar.gz \
+            --pattern runtime-sources-linux-amd64.tar.gz \
+            --dir "$RUNNER_TEMP/native-runtimes"
+          PYTHONPATH=src .venv/bin/python scripts/prepare-runtime-bundle.py \
+            --native-archives "$RUNNER_TEMP/native-runtimes" \
+            --cache "$RUNNER_TEMP/runtime-downloads" \
+            --output "$RUNNER_TEMP/runtime-bundle"
+      - name: Build the image
+        run: |
+          docker build --platform linux/amd64 -f containers/Dockerfile -t vn-stream:application .
+          docker build --platform linux/amd64 -f containers/release.Dockerfile \
+            --build-arg APP_IMAGE=vn-stream:application \
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.revision=$(git rev-parse HEAD)" \
+            --label "org.opencontainers.image.version=$RELEASE_TAG" \
+            -t "$IMAGE:$RELEASE_TAG" "$RUNNER_TEMP/runtime-bundle"
+      - name: Smoke-test the release image
+        run: .venv/bin/python scripts/check-release-image.py "$IMAGE:$RELEASE_TAG"
+      - name: Publish the versioned image
+        env:
+          REGISTRY_TOKEN: ${{ github.token }}
+        run: |
+          printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          if docker buildx imagetools inspect "$IMAGE:$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "::error::Version tag already has an image"
+            exit 1
+          fi
+          docker push "$IMAGE:$RELEASE_TAG"
+          digest=$(docker buildx imagetools inspect "$IMAGE:$RELEASE_TAG" --format '{{.Manifest.Digest}}')
+          printf 'Image: `%s@%s`\n' "$IMAGE" "$digest" >> "$GITHUB_STEP_SUMMARY"
+
+  promote:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    env:
+      RELEASE_TAG: ${{ inputs.promote_version }}
+      REGISTRY_TOKEN: ${{ github.token }}
+    steps:
+      - name: Verify anonymous download and promote the same digest
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          anonymous=$(mktemp -d)
+          docker --config "$anonymous" pull --platform linux/amd64 "$image:$RELEASE_TAG"
+          reference=$(docker inspect --format '{{index .RepoDigests 0}}' "$image:$RELEASE_TAG")
+          [[ "$reference" == "$image@sha256:"* ]]
+          printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker buildx imagetools create --prefer-index=false --tag "$image:latest" "$reference"
+          latest=$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$image:latest")
+          [[ "$latest" == "${reference##*@}" ]]
+          printf 'Latest: `%s`\n' "$reference" >> "$GITHUB_STEP_SUMMARY"

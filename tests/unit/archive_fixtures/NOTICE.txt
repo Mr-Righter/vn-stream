@@ -1,0 +1,13 @@
+# 归档测试样本
+
+`zipcrypto.zip` 是本项目自制的小样本，用 Info-ZIP 生成，密码为测试常量 `secret`；唯一成员 `game/script.rpyc` 内容为 ASCII `compiled`，不含真实游戏资源。用于验证传统 ZipCrypto 密码。
+
+三个 RAR5 文件来自 [rarfile 4.2 PyPI 发行源码](https://pypi.org/project/rarfile/4.2/#files) 内 `test/files/`，遵循发行包 ISC 许可，完整许可保存在 `LICENSE.rarfile`。本项目未修改样本；只验证归档读取，不执行内容。`rar5-crc.rar` 是普通 RAR5，`rar5-psw.rar` 是文件加密，`rar5-hpsw.rar` 同时加密头；后两者测试密码均为 upstream 使用的 `password`。每个包含两个相同的 2048 字节测试文本，解包后 SHA-256 为 `2eaebb4c18cdef7f20089f8a2fa3475bc59c2a193f66e2f1513609a4bef13e22`。
+
+| 文件 | SHA-256 |
+| --- | --- |
+| rar5-crc.rar | 9e42359428fe8d6c364536a3fe2ff4b705b4af63dfe0f56bd5cac8d042abd803 |
+| rar5-psw.rar | b6840e95152a1c3b5acd736dc34f988509866f04158b67da1b5a29e166a31355 |
+| rar5-hpsw.rar | 9aff93dfd85b1e44daeef233105831999a2076299997b7790e1cf1fd557a4457 |
+
+其余 ZIP/7z/TAR 样本由单元测试临时自制。RAR 测试需要系统 `unrar` 完整后端，不能将 Debian 的无 RAR codec 的 `7zip` 包视为替代。

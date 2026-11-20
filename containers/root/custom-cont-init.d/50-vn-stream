@@ -1,0 +1,9 @@
+#!/usr/bin/with-contenv bash
+set -euo pipefail
+: "${PASSWORD:?Set a nonempty PASSWORD for the streaming endpoint}"
+# Do not recursively chown NAS games or SDKs; only initialize service-owned paths.
+for directory in database runtimes uploads tasks/session save-backups cache/projects tmp logs; do
+  mkdir -p "/data/$directory"
+  chown abc:abc "/data/$directory"
+done
+chown abc:abc /data /data/tasks /data/cache

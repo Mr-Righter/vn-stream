@@ -1,0 +1,61 @@
+diff --git a/crates/compat/tests/transitions.rs b/crates/compat/tests/transitions.rs
+index 7e38583..d917970 100644
+--- a/crates/compat/tests/transitions.rs
++++ b/crates/compat/tests/transitions.rs
+@@ -1165,16 +1165,32 @@ fn a_composited_whole_subtree_transition_reuses_its_content() {
+         "the source subtree content is reused, not recomposited"
+     );
+ 
+-    // The teardown returns the layer to its own subtree; a cache kept from
+-    // before or during the transition is stale and must be recomposited
+-    // (LayerIntf.cpp:7961-7991).
+-    let _ = env
+-        ._scene
+-        .take_layer_content_region(named_layer(&env, "dest").id);
++    // The teardown releases the transition's cache consumers and returns the
++    // layer to its own subtree. With no remaining consumer, its content is
++    // released and the next render composites the subtree from scratch.
++    // reference/cpp/core/visual/LayerIntf.cpp:7961-7991
++    // reference/cpp/core/visual/LayerIntf.cpp:3981-4015
++    let dest = named_layer(&env, "dest").id;
+     env.run("b.stopTransition();");
+     assert!(
+-        named_layer(&env, "dest").content_region.is_some(),
+-        "the ended transition resumes from a fresh composite"
++        named_layer(&env, "dest").cache_content.is_none(),
++        "the ended transition releases its subtree content"
++    );
++    // reference/cpp/core/visual/LayerIntf.cpp:3981-4015
++    assert!(
++        env._scene.bitmap(dest_content).is_none(),
++        "the ended transition releases the old content bitmap"
++    );
++    let fresh = engine::layer_ops::render_layer_subtree(&mut env._scene, dest)
++        .expect("the destination's own subtree");
++    // reference/cpp/core/visual/LayerIntf.cpp:3956-3964
++    assert_ne!(fresh, dest_content, "the next composite uses fresh content");
++    // reference/cpp/core/visual/LayerIntf.cpp:7969-7991
++    // reference/cpp/core/visual/gl/blend_functor_c.h:67-76
++    assert_eq!(
++        scene_pixel(&env, fresh, 0, 0),
++        RED_COMPOSITED,
++        "the ended transition resumes from its own subtree pixels"
+     );
+ }
+ 
+diff --git a/crates/engine/tests/layer_ops.rs b/crates/engine/tests/layer_ops.rs
+index df7d245..80e5937 100644
+--- a/crates/engine/tests/layer_ops.rs
++++ b/crates/engine/tests/layer_ops.rs
+@@ -773,7 +773,10 @@ fn update_layer_changed_write_marks_subtree_and_ancestors() {
+     // composite it again: the parent's signature holds the child's
+     // contribution, and the write advances it.
+     let content = render_layer_subtree(&mut scene, parent).expect("the parent's content");
+-    let generation = scene.bitmap(content).expect("the parent's content").content_generation;
++    let generation = scene
++        .bitmap(content)
++        .expect("the parent's content")
++        .content_generation;
+     let epoch = scene.layer(child).unwrap().content_epoch;
+     let revision = scene.structure_revision();
+     assert_eq!(

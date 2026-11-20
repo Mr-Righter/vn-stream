@@ -1,0 +1,23 @@
+case "${VN_STREAM_ENABLE_HTTPS:-false}" in
+  false) return 0 ;;
+  true) ;;
+  *) echo 'VN_STREAM_ENABLE_HTTPS must be true or false' >&2; return 1 ;;
+esac
+
+cert=/etc/vn-stream/tls/cert.pem
+key=/etc/vn-stream/tls/cert.key
+if [[ ! -r "$cert" || ! -r "$key" ]]; then
+  echo 'VN Stream HTTPS requires readable cert.pem and cert.key in /etc/vn-stream/tls/' >&2
+  return 1
+fi
+if ! openssl x509 -in "$cert" -noout -checkend 0 >/dev/null ||
+   ! cert_public_key=$(openssl x509 -in "$cert" -pubkey -noout) ||
+   ! key_public_key=$(openssl pkey -in "$key" -passin pass: -pubout); then
+  echo 'VN Stream HTTPS requires a valid, unexpired PEM certificate and an unencrypted PEM private key' >&2
+  return 1
+fi
+if [[ "$cert_public_key" != "$key_public_key" ]]; then
+  echo 'VN Stream HTTPS certificate does not match its private key' >&2
+  return 1
+fi
+cat /defaults/vn-stream-https.conf >> "$NGINX_CONFIG"

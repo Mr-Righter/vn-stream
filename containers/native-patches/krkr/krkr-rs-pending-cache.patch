@@ -1,0 +1,384 @@
+diff --git a/crates/engine/src/layer_ops.rs b/crates/engine/src/layer_ops.rs
+index 1d1b6eb..ceee670 100644
+--- a/crates/engine/src/layer_ops.rs
++++ b/crates/engine/src/layer_ops.rs
+@@ -5358,6 +5358,7 @@ fn subtree_content_signature(scene: &Scene, order: &[u32], root: u32, depth: usi
+ }
+ 
+ /// The image a subtree draw samples.
++#[derive(Clone, Copy)]
+ enum SubtreeSource {
+     /// The layer's own live cache: the composited subtree at the layer rect,
+     /// with no image placement of its own.
+@@ -5365,19 +5366,22 @@ enum SubtreeSource {
+     /// A bitmap placed through the layer's `imageLeft`/`imageTop`/
+     /// `imageWidth`/`imageHeight` transform.
+     Bitmap(u32),
+-    /// A plane derived from the layer's main image or province buffer, which
+-    /// has no bitmap in the scene to borrow.
+-    Derived(BitmapState),
++    /// The alpha plane of a main image, materialized after its pixels resolve.
++    Mask(u32),
++    /// The province plane of a layer, materialized after draw selection.
++    Province(u32),
+ }
+ 
+ impl SubtreeSource {
+     /// The dimensions the source presents to the placement model.
+     fn dims(&self, scene: &Scene) -> Option<(u32, u32)> {
+         match self {
+-            Self::Cache(id) | Self::Bitmap(id) => scene
++            Self::Cache(id) | Self::Bitmap(id) | Self::Mask(id) => scene
+                 .bitmap(*id)
+                 .map(|bitmap| (bitmap.width, bitmap.height)),
+-            Self::Derived(bitmap) => Some((bitmap.width, bitmap.height)),
++            Self::Province(id) => scene
++                .layer(*id)
++                .map(|layer| (layer.province_width, layer.province_height)),
+         }
+     }
+ }
+@@ -5515,8 +5519,20 @@ fn subtree_source(
+         return Some(SubtreeSource::Cache(cache));
+     }
+     match layer.face {
+-        FACE_MASK => {
+-            let main = layer.bitmap.and_then(|id| scene.bitmap(id))?;
++        FACE_MASK => layer.bitmap.map(SubtreeSource::Mask),
++        FACE_PROVINCE => {
++            layer.province.as_ref()?;
++            Some(SubtreeSource::Province(layer.id))
++        }
++        _ => subtree_drawn_image(layer).map(SubtreeSource::Bitmap),
++    }
++}
++
++/// Materialize a selected coverage plane after its bitmap input has resolved.
++fn subtree_plane(scene: &Scene, source: &SubtreeSource) -> Option<BitmapState> {
++    match source {
++        SubtreeSource::Mask(id) => {
++            let main = scene.bitmap(*id)?;
+             if !pixels_usable(main, "renderLayerSubtree") {
+                 return None;
+             }
+@@ -5525,9 +5541,9 @@ fn subtree_source(
+                     .and_then(|i| main.rgba.get(i + 3).copied())
+                     .unwrap_or(0)
+             })
+-            .map(SubtreeSource::Derived)
+         }
+-        FACE_PROVINCE => {
++        SubtreeSource::Province(id) => {
++            let layer = scene.layer(*id)?;
+             let province = layer.province.as_deref()?;
+             let width = layer.province_width;
+             let height = layer.province_height;
+@@ -5537,9 +5553,8 @@ fn subtree_source(
+                     .copied()
+                     .unwrap_or(0)
+             })
+-            .map(SubtreeSource::Derived)
+         }
+-        _ => subtree_drawn_image(layer).map(SubtreeSource::Bitmap),
++        SubtreeSource::Cache(_) | SubtreeSource::Bitmap(_) => None,
+     }
+ }
+ 
+@@ -5758,7 +5773,7 @@ fn collect_subtree_draws(
+         // `ClipRect` does not clip it.
+         let (image, clip) = match &source {
+             SubtreeSource::Cache(_) => ((0, 0, bmp_w, bmp_h), None),
+-            SubtreeSource::Bitmap(_) | SubtreeSource::Derived(_) => (
++            SubtreeSource::Bitmap(_) | SubtreeSource::Mask(_) | SubtreeSource::Province(_) => (
+                 (
+                     layer.image_left,
+                     layer.image_top,
+@@ -5796,7 +5811,9 @@ fn collect_subtree_draws(
+         let treat_as_opaque = mode == 1 && dst_alpha != DestAlpha::Opaque;
+         // The content's base and the coverage planes are drawn as they are;
+         // every other image is composited with the layer's blend.
+-        let kind = if id == root || matches!(&source, SubtreeSource::Derived(_)) {
++        let kind = if id == root
++            || matches!(&source, SubtreeSource::Mask(_) | SubtreeSource::Province(_))
++        {
+             SubtreeKind::Plain
+         } else {
+             SubtreeKind::Image
+@@ -5933,6 +5950,8 @@ fn composite_subtree_draw(target: &mut BitmapState, draw: &SubtreeDraw, src: &Bi
+ /// The content is a plain `BitmapState` in the scene: there is no hidden
+ /// registry, and the caller owns its lifetime through
+ /// [`Scene::inc_cache_enabled_count`] / [`Scene::dec_cache_enabled_count`].
++/// Only image inputs selected by the subtree's visible placements are
++/// resolved before CPU sampling; other pending images remain deferred.
+ pub fn render_layer_subtree(scene: &mut Scene, root: u32) -> Option<u32> {
+     let (bitmap, w, h, trivial, opaque, window) = {
+         let layer = scene.layer(root)?;
+@@ -5957,10 +5976,14 @@ pub fn render_layer_subtree(scene: &mut Scene, root: u32) -> Option<u32> {
+         )
+     };
+     if trivial {
++        let bitmap = bitmap?;
++        if !scene.resolve_bitmap(bitmap) {
++            return None;
++        }
+         // The trivial path returns the main image, so any content composited
+         // for an earlier, non-trivial frame is stale.
+         release_subtree_caches(scene, root);
+-        return bitmap;
++        return Some(bitmap);
+     }
+     let content = ensure_layer_content(scene, root, w, h)?;
+     let content_bitmap = scene.bitmap(content)?;
+@@ -5974,6 +5997,21 @@ pub fn render_layer_subtree(scene: &mut Scene, root: u32) -> Option<u32> {
+     let recorded = scene.layer(root)?.cache_content_signature;
+     if current_signature != recorded {
+         let draws = collect_subtree_draws(scene, &order, root, w, h);
++        // Placement and cache coverage select the actual CPU inputs before
++        // waiting. Hidden, clipped and covered images stay deferred.
++        for draw in &draws {
++            match draw.source {
++                SubtreeSource::Cache(id) | SubtreeSource::Bitmap(id) | SubtreeSource::Mask(id) => {
++                    if !scene.resolve_bitmap(id) {
++                        return None;
++                    }
++                }
++                SubtreeSource::Province(_) => {}
++            }
++        }
++        // Installing a decode advances its image generation, so the cache
++        // records the sources whose pixels this pass actually samples.
++        let current_signature = subtree_content_signature(scene, &order, root, 0);
+         // The content starts from the layer's backdrop: an opaque layer's
+         // content is opaque, every other type's is transparent. The backdrop
+         // is what an opaque layer's children are composited over, so the
+@@ -5988,9 +6026,10 @@ pub fn render_layer_subtree(scene: &mut Scene, root: u32) -> Option<u32> {
+                     let (target, source) = scene.bitmap_mut_with_source(content, *id)?;
+                     composite_subtree_draw(target, draw, source);
+                 }
+-                SubtreeSource::Derived(source) => {
++                SubtreeSource::Mask(_) | SubtreeSource::Province(_) => {
++                    let source = subtree_plane(scene, &draw.source)?;
+                     let target = scene.bitmap_mut_untracked(content)?;
+-                    composite_subtree_draw(target, draw, source);
++                    composite_subtree_draw(target, draw, &source);
+                 }
+             }
+         }
+diff --git a/crates/engine/tests/imagedecode.rs b/crates/engine/tests/imagedecode.rs
+index f587e10..816c56b 100644
+--- a/crates/engine/tests/imagedecode.rs
++++ b/crates/engine/tests/imagedecode.rs
+@@ -1346,3 +1346,213 @@ fn a_demanded_job_is_taken_before_the_queued_ones() {
+         "the demanded job ran before the normal one"
+     );
+ }
++
++// ---------------------------------------------------------------------------
++// Pending inputs of the subtree compositor
++// ---------------------------------------------------------------------------
++
++fn ready_subtree_image(
++    pool: &mut DecodePool,
++    decoder: &GatedDecoder,
++    hint: &str,
++    color: [u8; 4],
++) -> PendingImage {
++    decoder.gate(hint).open();
++    let pass: Arc<dyn Fn(DecodedImage) -> Result<DecodedImage, String> + Send + Sync> =
++        Arc::new(move |mut image| {
++            for pixel in image.rgba.as_chunks_mut::<4>().0 {
++                pixel.copy_from_slice(&color);
++            }
++            Ok(image)
++        });
++    let (_, pending) = pool
++        .submit(
++            Arc::from(b"payload".as_slice()),
++            Some(hint.to_string()),
++            PIXELS.len() as u64,
++            Some(pass),
++        )
++        .expect("subtree image job");
++    // reference/cpp/core/visual/GraphicsLoaderIntf.cpp:1952-1960:
++    // the completed image is available before the composite reads it.
++    assert!(matches!(pending.await_ready(), ImageOutcome::Ready(_)));
++    pending
++}
++
++fn subtree_layer(
++    scene: &mut Scene,
++    window: u32,
++    parent: Option<u32>,
++    bitmap: u32,
++    rect: engine::Rect,
++    visible: bool,
++) -> u32 {
++    let id = scene.add_layer(window, parent);
++    let layer = scene.layer_mut(id).expect("subtree layer");
++    layer.bitmap = Some(bitmap);
++    layer.rect = rect;
++    layer.visible = visible;
++    layer.image_width = rect.w;
++    layer.image_height = rect.h;
++    id
++}
++
++#[test]
++fn subtree_composite_resolves_selected_inputs_and_reuses_the_final_signature() {
++    use api::blend::BlendMode;
++    use engine::Rect;
++    use engine::layer_ops::render_layer_subtree;
++
++    let decoder = Arc::new(GatedDecoder::new());
++    let mut pool = DecodePool::new(decoder.clone(), config(1)).expect("pool");
++    let main = ready_subtree_image(&mut pool, &decoder, "cache-main", [30, 60, 90, 255]);
++    let child = ready_subtree_image(&mut pool, &decoder, "cache-child", [200, 40, 60, 255]);
++    let hidden = ready_subtree_image(&mut pool, &decoder, "cache-hidden", [1, 2, 3, 255]);
++    let clipped = ready_subtree_image(&mut pool, &decoder, "cache-clipped", [7, 8, 9, 255]);
++    let unrelated = ready_subtree_image(&mut pool, &decoder, "cache-unrelated", [4, 5, 6, 255]);
++    let mut scene = Scene::default();
++    let window = scene.add_window("cache inputs", (2, 2));
++    let main = scene.add_pending_bitmap(2, 2, main).expect("main image");
++    let root = subtree_layer(&mut scene, window, None, main, Rect::new(0, 0, 2, 2), true);
++    let child = scene.add_pending_bitmap(2, 2, child).expect("child image");
++    let child_layer = subtree_layer(
++        &mut scene,
++        window,
++        Some(root),
++        child,
++        Rect::new(0, 0, 1, 1),
++        true,
++    );
++    scene.layer_mut(child_layer).expect("child").blend = BlendMode::Replace;
++    let hidden = scene
++        .add_pending_bitmap(2, 2, hidden)
++        .expect("hidden image");
++    subtree_layer(
++        &mut scene,
++        window,
++        Some(root),
++        hidden,
++        Rect::new(0, 0, 2, 2),
++        false,
++    );
++    let clipped = scene
++        .add_pending_bitmap(2, 2, clipped)
++        .expect("clipped image");
++    subtree_layer(
++        &mut scene,
++        window,
++        Some(root),
++        clipped,
++        Rect::new(4, 4, 1, 1),
++        true,
++    );
++    let unrelated = scene
++        .add_pending_bitmap(2, 2, unrelated)
++        .expect("unrelated image");
++    let other_window = scene.add_window("unrelated", (2, 2));
++    subtree_layer(
++        &mut scene,
++        other_window,
++        None,
++        unrelated,
++        Rect::new(0, 0, 2, 2),
++        true,
++    );
++    scene.inc_cache_enabled_count(root);
++
++    let content = render_layer_subtree(&mut scene, root).expect("composited cache");
++    // reference/cpp/core/visual/LayerIntf.cpp:7673-7752:
++    // Complete composites the root and the visible child's actual pixels.
++    assert!(scene.bitmap(main).expect("main").pending.is_none());
++    // reference/cpp/core/visual/LayerIntf.cpp:7673-7752
++    assert!(scene.bitmap(child).expect("child").pending.is_none());
++    let image = scene.bitmap(content).expect("cache");
++    // reference/cpp/core/visual/LayerIntf.cpp:7673-7752
++    assert_eq!(&image.rgba[..4], &[200, 40, 60, 255]);
++    // reference/cpp/core/visual/LayerIntf.cpp:7673-7752
++    assert_eq!(&image.rgba[4..8], &[30, 60, 90, 255]);
++    let generation = image.content_generation;
++    let pixels = image.rgba.clone();
++    let again = render_layer_subtree(&mut scene, root).expect("reused cache");
++    // reference/cpp/core/visual/LayerIntf.cpp:7688-7728:
++    // an unchanged completed cache needs no recomposition.
++    assert_eq!(again, content);
++    // reference/cpp/core/visual/LayerIntf.cpp:7688-7728
++    assert_eq!(
++        scene.bitmap(again).expect("cache").content_generation,
++        generation
++    );
++    // reference/cpp/core/visual/LayerIntf.cpp:7688-7728
++    assert_eq!(scene.bitmap(again).expect("cache").rgba, pixels);
++    for id in [hidden, clipped, unrelated] {
++        // reference/cpp/core/visual/LayerIntf.cpp:7673-7752:
++        // a subtree completion reads no hidden, clipped or unrelated image.
++        assert!(
++            scene
++                .bitmap(id)
++                .expect("unselected image")
++                .pending
++                .is_some()
++        );
++        // reference/cpp/core/visual/LayerIntf.cpp:7673-7752
++        assert!(scene.bitmap(id).expect("unselected image").rgba.is_empty());
++    }
++}
++
++#[test]
++fn subtree_mask_derivation_resolves_the_selected_alpha_plane() {
++    use engine::Rect;
++    use engine::layer_ops::render_layer_subtree;
++
++    let decoder = Arc::new(GatedDecoder::new());
++    let mut pool = DecodePool::new(decoder.clone(), config(1)).expect("pool");
++    let pending = ready_subtree_image(&mut pool, &decoder, "cache-mask", [20, 40, 60, 128]);
++    let mut scene = Scene::default();
++    let window = scene.add_window("mask input", (2, 2));
++    let main = scene.add_bitmap(2, 2, vec![0; 16]);
++    let root = subtree_layer(&mut scene, window, None, main, Rect::new(0, 0, 2, 2), true);
++    let mask = scene.add_pending_bitmap(2, 2, pending).expect("mask image");
++    let child = subtree_layer(
++        &mut scene,
++        window,
++        Some(root),
++        mask,
++        Rect::new(0, 0, 1, 1),
++        true,
++    );
++    scene.layer_mut(child).expect("mask layer").face = 2; // dfMask
++    let content = render_layer_subtree(&mut scene, root).expect("mask composite");
++    // reference/cpp/core/visual/LayerIntf.cpp:7673-7752:
++    // the mask face reads the completed MainImage's alpha plane.
++    assert!(scene.bitmap(mask).expect("mask").pending.is_none());
++    // reference/cpp/core/visual/LayerIntf.cpp:7673-7752
++    assert_eq!(
++        &scene.bitmap(content).expect("cache").rgba[..4],
++        &[128, 128, 128, 255]
++    );
++}
++
++#[test]
++fn trivial_subtree_returns_a_resolved_main_image() {
++    use engine::Rect;
++    use engine::layer_ops::render_layer_subtree;
++
++    let decoder = Arc::new(GatedDecoder::new());
++    let mut pool = DecodePool::new(decoder.clone(), config(1)).expect("pool");
++    let pending = ready_subtree_image(&mut pool, &decoder, "trivial-main", [30, 60, 90, 255]);
++    let mut scene = Scene::default();
++    let window = scene.add_window("trivial input", (2, 2));
++    let image = scene.add_pending_bitmap(2, 2, pending).expect("main image");
++    let root = subtree_layer(&mut scene, window, None, image, Rect::new(0, 0, 2, 2), true);
++    let content = render_layer_subtree(&mut scene, root).expect("trivial content");
++    // reference/cpp/core/visual/LayerIntf.cpp:7673-7752:
++    // the trivial completion returns MainImage with its pixels available.
++    assert_eq!(content, image);
++    // reference/cpp/core/visual/LayerIntf.cpp:7673-7752
++    assert!(scene.bitmap(content).expect("main").pending.is_none());
++    // reference/cpp/core/visual/LayerIntf.cpp:7673-7752
++    assert_eq!(
++        &scene.bitmap(content).expect("main").rgba[..4],
++        &[30, 60, 90, 255]
++    );
++}

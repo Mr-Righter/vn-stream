@@ -1,0 +1,61 @@
+--- a/cpp/core/sound/win32/WaveImpl.cpp
++++ b/cpp/core/sound/win32/WaveImpl.cpp
+@@ -1515,11 +1515,11 @@
+ //---------------------------------------------------------------------------
+ tTVPWaveSoundBufferThread::~tTVPWaveSoundBufferThread() {
+     SetPriority(ttpNormal);
++    Terminate();
+     Resume();
+     Event.Set();
+     WaitFor();
+     EventQueue.Deallocate();
+-    Terminate();
+ }
+ 
+ //---------------------------------------------------------------------------
+--- a/cpp/core/utils/win32/ThreadImpl.h
++++ b/cpp/core/utils/win32/ThreadImpl.h
+@@ -21,7 +21,7 @@
+ // tTVPThread
+ //---------------------------------------------------------------------------
+ class tTVPThread {
+-    bool Terminated;
++    std::atomic<bool> Terminated;
+     std::thread Handle;
+     // DWORD ThreadId;
+     std::mutex _mutex; // for suspend
+--- a/cpp/core/utils/win32/ThreadImpl.cpp
++++ b/cpp/core/utils/win32/ThreadImpl.cpp
+@@ -57,7 +57,7 @@
+     // This is a safety net to avoid std::terminate().
+     if(Handle.joinable()) {
+         Terminated = true;
+-        _cond.notify_one(); // wake up if suspended
++        Resume();
+         Handle.join();
+     }
+ }
+@@ -65,9 +65,9 @@
+ //---------------------------------------------------------------------------
+ void *tTVPThread::StartProc(void *arg) {
+     auto *_this = (tTVPThread *)arg;
+-    if(_this->Suspended) {
++    {
+         std::unique_lock lk(_this->_mutex);
+-        _this->_cond.wait(lk);
++        _this->_cond.wait(lk, [_this] { return !_this->Suspended; });
+     }
+     _this->Execute();
+     _this->Finished.store(true, std::memory_order_release);
+@@ -105,7 +105,10 @@
+ // }
+ //---------------------------------------------------------------------------
+ void tTVPThread::Resume() {
+-    Suspended = false;
++    {
++        std::lock_guard lock(_mutex);
++        Suspended = false;
++    }
+     _cond.notify_one();
+     // while((tjs_int32)ResumeThread(Handle) > 1) ;
+ }

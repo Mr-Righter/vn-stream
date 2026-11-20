@@ -1,0 +1,71 @@
+diff --git a/bridge/engine_api/CMakeLists.txt b/bridge/engine_api/CMakeLists.txt
+index 38f4205..769082a 100644
+--- a/bridge/engine_api/CMakeLists.txt
++++ b/bridge/engine_api/CMakeLists.txt
+@@ -21,6 +21,7 @@ else()
+ endif()
+ 
+ target_compile_features(engine_api PRIVATE cxx_std_17)
++target_compile_definitions(engine_api PRIVATE KRKR2_WITH_LIVE2D=$<BOOL:${KRKR2_WITH_LIVE2D}>)
+ 
+ if(IOS)
+     # iOS static library: ensure symbols are visible so Dart FFI
+diff --git a/bridge/engine_api/src/engine_api.cpp b/bridge/engine_api/src/engine_api.cpp
+index fc96613..2b77af1 100644
+--- a/bridge/engine_api/src/engine_api.cpp
++++ b/bridge/engine_api/src/engine_api.cpp
+@@ -52,8 +52,10 @@ void krkr_GetSurfaceDimensions(uint32_t*, uint32_t*);
+ 
+ int TVPDrawSceneOnce(int interval);
+ 
++#if KRKR2_WITH_LIVE2D
+ extern "C" void TVPRegisterKrkrGLESPluginAnchor();
+ extern "C" void TVPRegisterKrkrLive2DPluginAnchor();
++#endif
+ 
+ struct engine_handle_s {
+   std::recursive_mutex mutex;
+@@ -197,8 +199,10 @@ void InstallCrashSignalHandlers() {
+ }
+ 
+ void EnsureInternalPluginAnchorsLinked() {
++#if KRKR2_WITH_LIVE2D
+   TVPRegisterKrkrGLESPluginAnchor();
+   TVPRegisterKrkrLive2DPluginAnchor();
++#endif
+ }
+ 
+ void EnsureRuntimeLoggersInitialized() {
+diff --git a/cpp/plugins/CMakeLists.txt b/cpp/plugins/CMakeLists.txt
+index b6183e0..fa68b91 100644
+--- a/cpp/plugins/CMakeLists.txt
++++ b/cpp/plugins/CMakeLists.txt
+@@ -28,8 +28,6 @@ target_sources(${PROJECT_NAME} PUBLIC
+     layerExRaster.cpp
+     layerExAreaAverage.cpp
+     layerExLongExposure.cpp
+-    krkrlive2d.cpp
+-    krkrgles.cpp
+     drawDeviceD2DCompat.cpp
+     wfBasicEffectCompat.cpp
+     wfTypicalDSPCompat.cpp
+@@ -62,6 +60,9 @@ add_definitions(-D__STDC_CONSTANT_MACROS -DTJS_TEXT_OUT_CRLF)
+ # ---------------------------------------------------------------------------
+ # Live2D Cubism SDK
+ # ---------------------------------------------------------------------------
++option(KRKR2_WITH_LIVE2D "Build Live2D plugins with the complete Cubism SDK" ON)
++if(KRKR2_WITH_LIVE2D)
++    target_sources(${PROJECT_NAME} PRIVATE krkrlive2d.cpp krkrgles.cpp)
+ set(CUBISM_DIR ${CMAKE_CURRENT_SOURCE_DIR}/cubism)
+ set(CUBISM_CORE_DIR ${CUBISM_DIR}/Core)
+ set(CUBISM_FW_DIR ${CUBISM_DIR}/Framework)
+@@ -122,5 +123,9 @@ target_include_directories(${PROJECT_NAME} PUBLIC
+ target_compile_definitions(${PROJECT_NAME} PUBLIC CSM_TARGET_ANGLE_ES2)
+ target_link_libraries(${PROJECT_NAME} PUBLIC CubismFramework)
+ 
++else()
++    message(STATUS "Live2D plugins disabled: SDK unavailable; required plugin loads must fail")
++endif()
++
+ target_include_directories(${PROJECT_NAME} PUBLIC ${KRKR2PLUGIN_PATH} ${KRKR2PLUGIN_PATH}/simplebinder})
+ target_link_libraries(${PROJECT_NAME} PUBLIC krkr2core)

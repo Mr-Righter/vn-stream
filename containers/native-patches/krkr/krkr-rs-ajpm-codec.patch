@@ -1,0 +1,1634 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 8925984..44706f1 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -1444,6 +1444,7 @@ version = "1.0.0"
+ dependencies = [
+  "api",
+  "ffmpeg-next",
++ "flate2",
+  "image",
+  "log",
+  "ndk",
+diff --git a/crates/platform/media/Cargo.toml b/crates/platform/media/Cargo.toml
+index f1fda39..1b8bfc7 100644
+--- a/crates/platform/media/Cargo.toml
++++ b/crates/platform/media/Cargo.toml
+@@ -31,6 +31,8 @@ video-mediacodec = []
+ 
+ [dependencies]
+ api = { workspace = true }
++# Standard AJPM separate-alpha planes use the workspace zlib backend.
++flate2 = { workspace = true }
+ # Optional so the Android build never links libav*. Enabled by `video-ffmpeg`.
+ ffmpeg-next = { workspace = true, optional = true }
+ symphonia = { version = "0.6", default-features = false, features = ["wav", "pcm", "ogg", "vorbis", "flac", "mp3", "isomp4", "aac"] }
+diff --git a/crates/platform/media/LICENSE-IJG.txt b/crates/platform/media/LICENSE-IJG.txt
+new file mode 100644
+index 0000000..dbf8070
+--- /dev/null
++++ b/crates/platform/media/LICENSE-IJG.txt
+@@ -0,0 +1,260 @@
++libjpeg-turbo note:  This file has been modified by The libjpeg-turbo Project
++to include only information relevant to libjpeg-turbo, to wordsmith certain
++sections, and to remove impolitic language that existed in the libjpeg v8
++README.  It is included only for reference.  Please see README.md for
++information specific to libjpeg-turbo.
++
++
++The Independent JPEG Group's JPEG software
++==========================================
++
++This distribution contains a release of the Independent JPEG Group's free JPEG
++software.  You are welcome to redistribute this software and to use it for any
++purpose, subject to the conditions under LEGAL ISSUES, below.
++
++This software is the work of Tom Lane, Guido Vollbeding, Philip Gladstone,
++Bill Allombert, Jim Boucher, Lee Crocker, Bob Friesenhahn, Ben Jackson,
++Julian Minguillon, Luis Ortiz, George Phillips, Davide Rossi, Ge' Weijers,
++and other members of the Independent JPEG Group.
++
++IJG is not affiliated with the ISO/IEC JTC1/SC29/WG1 standards committee
++(also known as JPEG, together with ITU-T SG16).
++
++
++DOCUMENTATION ROADMAP
++=====================
++
++This file contains the following sections:
++
++OVERVIEW            General description of JPEG and the IJG software.
++LEGAL ISSUES        Copyright, lack of warranty, terms of distribution.
++REFERENCES          Where to learn more about JPEG.
++ARCHIVE LOCATIONS   Where to find newer versions of this software.
++FILE FORMAT WARS    Software *not* to get.
++TO DO               Plans for future IJG releases.
++
++Other documentation files in the distribution are:
++
++User documentation:
++  doc/usage.txt         Usage instructions for cjpeg, djpeg, jpegtran,
++                        rdjpgcom, and wrjpgcom.
++  doc/*.1               Unix-style man pages for programs (same info as
++                        usage.txt).
++  doc/wizard.txt        Advanced usage instructions for JPEG wizards only.
++  doc/change.log        Version-to-version change highlights.
++Programmer and internal documentation:
++  doc/libjpeg.txt       How to use the JPEG library in your own programs.
++  src/example.c         Sample code for calling the JPEG library.
++  doc/structure.txt     Overview of the JPEG library's internal structure.
++  doc/coderules.txt     Coding style rules --- please read if you contribute
++                        code.
++
++Please read at least usage.txt.  Some information can also be found in the JPEG
++FAQ (Frequently Asked Questions) article.  See ARCHIVE LOCATIONS below to find
++out where to obtain the FAQ article.
++
++If you want to understand how the JPEG code works, we suggest reading one or
++more of the REFERENCES, then looking at the documentation files (in roughly
++the order listed) before diving into the code.
++
++
++OVERVIEW
++========
++
++This package contains C software to implement JPEG image encoding, decoding,
++and transcoding.  JPEG (pronounced "jay-peg") is a standardized compression
++method for full-color and grayscale images.  JPEG's strong suit is compressing
++photographic images or other types of images that have smooth color and
++brightness transitions between neighboring pixels.  Images with sharp lines or
++other abrupt features may not compress well with JPEG, and a higher JPEG
++quality may have to be used to avoid visible compression artifacts with such
++images.
++
++JPEG is normally lossy, meaning that the output pixels are not necessarily
++identical to the input pixels.  However, on photographic content and other
++"smooth" images, very good compression ratios can be obtained with no visible
++compression artifacts, and extremely high compression ratios are possible if
++you are willing to sacrifice image quality (by reducing the "quality" setting
++in the compressor.)
++
++This software implements JPEG baseline, extended-sequential, progressive, and
++lossless compression processes.  Provision is made for supporting all variants
++of these processes, although some uncommon parameter settings aren't
++implemented yet.  We have made no provision for supporting the hierarchical
++processes defined in the standard.
++
++We provide a set of library routines for reading and writing JPEG image files,
++plus two sample applications "cjpeg" and "djpeg", which use the library to
++perform conversion between JPEG and some other popular image file formats.
++The library is intended to be reused in other applications.
++
++In order to support file conversion and viewing software, we have included
++considerable functionality beyond the bare JPEG coding/decoding capability;
++for example, the color quantization modules are not strictly part of JPEG
++decoding, but they are essential for output to colormapped file formats.  These
++extra functions can be compiled out of the library if not required for a
++particular application.
++
++We have also included "jpegtran", a utility for lossless transcoding between
++different JPEG processes, and "rdjpgcom" and "wrjpgcom", two simple
++applications for inserting and extracting textual comments in JFIF files.
++
++The emphasis in designing this software has been on achieving portability and
++flexibility, while also making it fast enough to be useful.  In particular,
++the software is not intended to be read as a tutorial on JPEG.  (See the
++REFERENCES section for introductory material.)  Rather, it is intended to
++be reliable, portable, industrial-strength code.  We do not claim to have
++achieved that goal in every aspect of the software, but we strive for it.
++
++We welcome the use of this software as a component of commercial products.
++No royalty is required, but we do ask for an acknowledgement in product
++documentation, as described under LEGAL ISSUES.
++
++
++LEGAL ISSUES
++============
++
++In plain English:
++
++1. We don't promise that this software works.  (But if you find any bugs,
++   please let us know!)
++2. You can use this software for whatever you want.  You don't have to pay us.
++3. You may not pretend that you wrote this software.  If you use it in a
++   program, you must acknowledge somewhere in your documentation that
++   you've used the IJG code.
++
++In legalese:
++
++The authors make NO WARRANTY or representation, either express or implied,
++with respect to this software, its quality, accuracy, merchantability, or
++fitness for a particular purpose.  This software is provided "AS IS", and you,
++its user, assume the entire risk as to its quality and accuracy.
++
++This software is copyright (C) 1991-2020, Thomas G. Lane, Guido Vollbeding.
++All Rights Reserved except as specified below.
++
++Permission is hereby granted to use, copy, modify, and distribute this
++software (or portions thereof) for any purpose, without fee, subject to these
++conditions:
++(1) If any part of the source code for this software is distributed, then this
++README file must be included, with this copyright and no-warranty notice
++unaltered; and any additions, deletions, or changes to the original files
++must be clearly indicated in accompanying documentation.
++(2) If only executable code is distributed, then the accompanying
++documentation must state that "this software is based in part on the work of
++the Independent JPEG Group".
++(3) Permission for use of this software is granted only if the user accepts
++full responsibility for any undesirable consequences; the authors accept
++NO LIABILITY for damages of any kind.
++
++These conditions apply to any software derived from or based on the IJG code,
++not just to the unmodified library.  If you use our work, you ought to
++acknowledge us.
++
++Permission is NOT granted for the use of any IJG author's name or company name
++in advertising or publicity relating to this software or products derived from
++it.  This software may be referred to only as "the Independent JPEG Group's
++software".
++
++We specifically permit and encourage the use of this software as the basis of
++commercial products, provided that all warranty or liability claims are
++assumed by the product vendor.
++
++
++REFERENCES
++==========
++
++We recommend reading one or more of these references before trying to
++understand the innards of the JPEG software.
++
++The best short technical introduction to the JPEG compression algorithm is
++        Wallace, Gregory K.  "The JPEG Still Picture Compression Standard",
++        Communications of the ACM, April 1991 (vol. 34 no. 4), pp. 30-44.
++(Adjacent articles in that issue discuss MPEG motion picture compression,
++applications of JPEG, and related topics.)  If you don't have the CACM issue
++handy, a PDF file containing a revised version of Wallace's article is
++available at http://www.ijg.org/files/Wallace.JPEG.pdf.  The file (actually
++a preprint for an article that appeared in IEEE Trans. Consumer Electronics)
++omits the sample images that appeared in CACM, but it includes corrections
++and some added material.  Note: the Wallace article is copyright ACM and IEEE,
++and it may not be used for commercial purposes.
++
++A somewhat less technical, more leisurely introduction to JPEG can be found in
++"The Data Compression Book" by Mark Nelson and Jean-loup Gailly, published by
++M&T Books (New York), 2nd ed. 1996, ISBN 1-55851-434-1.  This book provides
++good explanations and example C code for a multitude of compression methods
++including JPEG.  It is an excellent source if you are comfortable reading C
++code but don't know much about data compression in general.  The book's JPEG
++sample code is far from industrial-strength, but when you are ready to look
++at a full implementation, you've got one here...
++
++The best currently available description of JPEG is the textbook "JPEG Still
++Image Data Compression Standard" by William B. Pennebaker and Joan L.
++Mitchell, published by Van Nostrand Reinhold, 1993, ISBN 0-442-01272-1.
++Price US$59.95, 638 pp.  The book includes the complete text of the ISO JPEG
++standards (DIS 10918-1 and draft DIS 10918-2).
++
++The original JPEG standard is divided into two parts, Part 1 being the actual
++specification, while Part 2 covers compliance testing methods.  Part 1 is
++titled "Digital Compression and Coding of Continuous-tone Still Images,
++Part 1: Requirements and guidelines" and has document numbers ISO/IEC IS
++10918-1, ITU-T T.81.  Part 2 is titled "Digital Compression and Coding of
++Continuous-tone Still Images, Part 2: Compliance testing" and has document
++numbers ISO/IEC IS 10918-2, ITU-T T.83.
++
++The JPEG standard does not specify all details of an interchangeable file
++format.  For the omitted details, we follow the "JFIF" conventions, revision
++1.02.  JFIF version 1 has been adopted as ISO/IEC 10918-5 (05/2013) and
++Recommendation ITU-T T.871 (05/2011): Information technology - Digital
++compression and coding of continuous-tone still images: JPEG File Interchange
++Format (JFIF).  It is available as a free download in PDF file format from
++https://www.iso.org/standard/54989.html and http://www.itu.int/rec/T-REC-T.871.
++A PDF file of the older JFIF 1.02 specification is available at
++http://www.w3.org/Graphics/JPEG/jfif3.pdf.
++
++The TIFF 6.0 file format specification can be obtained from
++http://mirrors.ctan.org/graphics/tiff/TIFF6.ps.gz.  The JPEG incorporation
++scheme found in the TIFF 6.0 spec of 3-June-92 has a number of serious
++problems.  IJG does not recommend use of the TIFF 6.0 design (TIFF Compression
++tag 6).  Instead, we recommend the JPEG design proposed by TIFF Technical Note
++#2 (Compression tag 7).  Copies of this Note can be obtained from
++http://www.ijg.org/files/.  It is expected that the next revision
++of the TIFF spec will replace the 6.0 JPEG design with the Note's design.
++Although IJG's own code does not support TIFF/JPEG, the free libtiff library
++uses our library to implement TIFF/JPEG per the Note.
++
++
++ARCHIVE LOCATIONS
++=================
++
++The "official" archive site for this software is www.ijg.org.
++The most recent released version can always be found there in
++directory "files".
++
++The JPEG FAQ (Frequently Asked Questions) article is a source of some
++general information about JPEG.  It is available at
++http://www.faqs.org/faqs/jpeg-faq.
++
++
++FILE FORMAT COMPATIBILITY
++=========================
++
++This software implements ITU T.81 | ISO/IEC 10918 with some extensions from
++ITU T.871 | ISO/IEC 10918-5 (JPEG File Interchange Format-- see REFERENCES).
++Informally, the term "JPEG image" or "JPEG file" most often refers to JFIF or
++a subset thereof, but there are other formats containing the name "JPEG" that
++are incompatible with the original JPEG standard or with JFIF (for instance,
++JPEG 2000 and JPEG XR).  This software therefore does not support these
++formats.  Indeed, one of the original reasons for developing this free software
++was to help force convergence on a common, interoperable format standard for
++JPEG files.
++
++JFIF is a minimal or "low end" representation.  TIFF/JPEG (TIFF revision 6.0 as
++modified by TIFF Technical Note #2) can be used for "high end" applications
++that need to record a lot of additional data about an image.
++
++
++TO DO
++=====
++
++Please send bug reports, offers of help, etc. to jpeg-info@jpegclub.org.
+diff --git a/crates/platform/media/examples/alpha_movie.rs b/crates/platform/media/examples/alpha_movie.rs
+new file mode 100644
+index 0000000..8a58a7d
+--- /dev/null
++++ b/crates/platform/media/examples/alpha_movie.rs
+@@ -0,0 +1,49 @@
++//! Decode a local AJPM corpus without running project code.
++use std::path::Path;
++use std::sync::Arc;
++use std::time::Instant;
++
++use media::alpha_movie::{AlphaMovie, AlphaMovieLimits};
++
++fn main() -> Result<(), Box<dyn std::error::Error>> {
++    let directory = std::env::args()
++        .nth(1)
++        .ok_or("usage: alpha_movie DIRECTORY")?;
++    let mut paths = std::fs::read_dir(Path::new(&directory))?
++        .map(|entry| entry.map(|entry| entry.path()))
++        .collect::<Result<Vec<_>, _>>()?;
++    paths.sort();
++    let mut count = 0_u64;
++    for path in paths {
++        if path.extension().and_then(|value| value.to_str()) != Some("amv") {
++            continue;
++        }
++        let movie = AlphaMovie::open(
++            Arc::from(std::fs::read(&path)?),
++            AlphaMovieLimits {
++                max_frames: 100_000,
++                max_frame_pixels: 16 * 1024 * 1024,
++            },
++        )?;
++        let started = Instant::now();
++        let metadata = movie.metadata();
++        let mut hash = 0xcbf29ce484222325_u64;
++        for index in 0..metadata.num_frames {
++            let frame = movie.decode(index)?;
++            for pixel in frame.rgba {
++                hash = (hash ^ u64::from(pixel)).wrapping_mul(0x100000001b3);
++            }
++            count += 1;
++        }
++        println!(
++            "{}\t{}\t{}x{}\t{:.3}ms\t{hash:016x}",
++            path.display(),
++            metadata.num_frames,
++            metadata.width,
++            metadata.height,
++            started.elapsed().as_secs_f64() * 1000.0
++        );
++    }
++    println!("decoded_frames={count}");
++    Ok(())
++}
+diff --git a/crates/platform/media/src/alpha_movie.rs b/crates/platform/media/src/alpha_movie.rs
+new file mode 100644
+index 0000000..4cf3c86
+--- /dev/null
++++ b/crates/platform/media/src/alpha_movie.rs
+@@ -0,0 +1,396 @@
++//! Bounded, indexed AJPM decoding with separate or block-coded alpha.
++//!
++//! Input bytes and decoded frames belong to the caller. Opening validates the
++//! container and builds a compact index; decoding expands only one frame.
++
++mod entropy;
++mod idct;
++
++use std::{fmt, ops::Range, sync::Arc};
++
++use flate2::{Decompress, FlushDecompress, Status};
++
++/// Caller-selected bounds for the index and individual decoded rectangles.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub struct AlphaMovieLimits {
++    /// Largest permitted number of indexed frames.
++    pub max_frames: usize,
++    /// Largest permitted width times height of any frame, in pixels.
++    pub max_frame_pixels: usize,
++}
++
++/// Exact container metadata; frame rectangles can exceed the nominal screen.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub struct AlphaMovieMetadata {
++    /// Number of frames in the container.
++    pub num_frames: u32,
++    /// Denominator of the exact frames-per-second rational.
++    pub fps_scale: u32,
++    /// Numerator of the exact frames-per-second rational.
++    pub fps_rate: u32,
++    /// Nominal screen width in pixels.
++    pub width: u16,
++    /// Nominal screen height in pixels.
++    pub height: u16,
++}
++
++/// One frame rectangle with tightly packed, straight-alpha RGBA8 pixels.
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub struct AlphaMovieFrame {
++    /// Zero-based frame number.
++    pub index: u32,
++    /// Rectangle origin in nominal screen coordinates, in pixels.
++    pub left: u16,
++    /// Rectangle origin in nominal screen coordinates, in pixels.
++    pub top: u16,
++    /// Decoded rectangle width in pixels, including any padding.
++    pub width: u16,
++    /// Decoded rectangle height in pixels, including any padding.
++    pub height: u16,
++    /// Row-major RGBA8 bytes, with no premultiplication or screen cropping.
++    pub rgba: Vec<u8>,
++}
++
++/// Container, resource, entropy, and alpha-plane failures.
++#[derive(Clone, Debug, PartialEq, Eq)]
++#[non_exhaustive]
++pub enum AlphaMovieError {
++    /// Invalid or truncated container structure.
++    Format(&'static str),
++    /// A caller-supplied resource bound would be exceeded.
++    ResourceLimit(&'static str),
++    /// A buffer allocation cannot be satisfied.
++    Allocation(String),
++    /// Missing or invalid Huffman coefficients.
++    Entropy(&'static str),
++    /// The compressed alpha plane is invalid or has the wrong size.
++    Alpha(String),
++    /// A requested frame index does not exist.
++    FrameOutOfRange {
++        /// Requested zero-based frame number.
++        index: u32,
++        /// Number of indexed frames.
++        num_frames: u32,
++    },
++}
++
++impl fmt::Display for AlphaMovieError {
++    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++        write!(formatter, "AJPM: {self:?}")
++    }
++}
++
++impl std::error::Error for AlphaMovieError {}
++
++#[derive(Clone, Debug)]
++struct FrameRecord {
++    index: u32,
++    left: u16,
++    top: u16,
++    width: u16,
++    height: u16,
++    alpha: Range<usize>,
++    entropy: Range<usize>,
++}
++
++/// Immutable compressed movie and validated frame index.
++#[derive(Clone, Debug)]
++pub struct AlphaMovie {
++    bytes: Arc<[u8]>,
++    metadata: AlphaMovieMetadata,
++    frames: Vec<FrameRecord>,
++    quantization: [[u8; 64]; 3],
++    separate_alpha: bool,
++}
++
++impl AlphaMovie {
++    /// Validates a container and indexes its compressed frame records.
++    ///
++    /// # Errors
++    /// Reports invalid headers, records, rectangles, index bounds or allocations.
++    /// Entropy and zlib contents are validated lazily by [`Self::decode`].
++    pub fn open(bytes: Arc<[u8]>, limits: AlphaMovieLimits) -> Result<Self, AlphaMovieError> {
++        if bytes.get(..4) != Some(b"AJPM") || bytes.len() < 40 {
++            return Err(AlphaMovieError::Format("missing file header"));
++        }
++        if read_u32(&bytes, 8)? != 0 {
++            return Err(AlphaMovieError::Format("unsupported revision"));
++        }
++        let header_size = to_usize(read_u32(&bytes, 12)?)?;
++        let attribute = bytes[36];
++        let separate_alpha = attribute & 1 == 0;
++        if (separate_alpha && (attribute & 2 == 0 || header_size != 168))
++            || (!separate_alpha && header_size != 232)
++            || header_size > bytes.len()
++        {
++            return Err(AlphaMovieError::Format(
++                "invalid attribute or quantization header",
++            ));
++        }
++        let metadata = AlphaMovieMetadata {
++            num_frames: read_u32(&bytes, 20)?,
++            fps_scale: read_u32(&bytes, 24)?,
++            fps_rate: read_u32(&bytes, 28)?,
++            width: read_u16(&bytes, 32)?,
++            height: read_u16(&bytes, 34)?,
++        };
++        if metadata.num_frames == 0
++            || metadata.fps_scale == 0
++            || metadata.fps_rate == 0
++            || metadata.width == 0
++            || metadata.height == 0
++        {
++            return Err(AlphaMovieError::Format(
++                "zero frame count, rate or screen dimensions",
++            ));
++        }
++        let count = to_usize(metadata.num_frames)?;
++        if count > limits.max_frames {
++            return Err(AlphaMovieError::ResourceLimit("frame count"));
++        }
++        let minimum_record = if separate_alpha { 24 } else { 20 };
++        if count > (bytes.len() - header_size) / minimum_record {
++            return Err(AlphaMovieError::Format(
++                "frame count exceeds remaining bytes",
++            ));
++        }
++        let mut quantization = [[0; 64]; 3];
++        for (table, source) in quantization
++            .iter_mut()
++            .zip(bytes[40..header_size].as_chunks::<64>().0.iter())
++        {
++            table.copy_from_slice(source);
++        }
++        let mut frames = Vec::new();
++        frames
++            .try_reserve_exact(count)
++            .map_err(|error| AlphaMovieError::Allocation(error.to_string()))?;
++        let mut position = header_size;
++        for index in 0..metadata.num_frames {
++            let record = read_record(&bytes, position, index, separate_alpha, limits)?;
++            position = record.entropy.end;
++            frames.push(record);
++        }
++        if position != bytes.len() {
++            return Err(AlphaMovieError::Format("data follows final frame"));
++        }
++        Ok(Self {
++            bytes,
++            metadata,
++            frames,
++            quantization,
++            separate_alpha,
++        })
++    }
++
++    /// Returns exact nominal dimensions and rational frame-rate metadata.
++    #[must_use]
++    pub const fn metadata(&self) -> &AlphaMovieMetadata {
++        &self.metadata
++    }
++
++    /// Expands one independently coded frame, without changing a playback cursor.
++    ///
++    /// # Errors
++    /// Reports out-of-range indexes, invalid Huffman or zlib data, and allocation failures.
++    pub fn decode(&self, frame_index: u32) -> Result<AlphaMovieFrame, AlphaMovieError> {
++        let record =
++            self.frames
++                .get(to_usize(frame_index)?)
++                .ok_or(AlphaMovieError::FrameOutOfRange {
++                    index: frame_index,
++                    num_frames: self.metadata.num_frames,
++                })?;
++        let width = usize::from(record.width);
++        let height = usize::from(record.height);
++        let pixels = width
++            .checked_mul(height)
++            .ok_or(AlphaMovieError::ResourceLimit("pixel count overflow"))?;
++        let mut rgba = buffer(
++            pixels
++                .checked_mul(4)
++                .ok_or(AlphaMovieError::ResourceLimit("RGBA size overflow"))?,
++        )?;
++        if pixels != 0 {
++            let mut alpha = if self.separate_alpha {
++                inflate_alpha(&self.bytes[record.alpha.clone()], pixels)?
++            } else {
++                buffer(pixels)?
++            };
++            let mut y = buffer(pixels)?;
++            let mut v = buffer(pixels / 4)?;
++            let mut u = buffer(pixels / 4)?;
++            let mut decoder = entropy::Decoder::new(&self.bytes[record.entropy.clone()]);
++            for row in (0..height).step_by(16) {
++                for col in (0..width).step_by(16) {
++                    let chroma = row / 2 * (width / 2) + col / 2;
++                    decoder.chroma(&self.quantization[1], &mut v[chroma..], width / 2)?;
++                    decoder.chroma(&self.quantization[1], &mut u[chroma..], width / 2)?;
++                    for offset in [0, 8, 8 * width, 8 * width + 8] {
++                        decoder.luma(
++                            &self.quantization[0],
++                            &mut y[row * width + col + offset..],
++                            width,
++                        )?;
++                    }
++                    if !self.separate_alpha {
++                        for offset in [0, 8, 8 * width, 8 * width + 8] {
++                            decoder.luma(
++                                &self.quantization[2],
++                                &mut alpha[row * width + col + offset..],
++                                width,
++                            )?;
++                        }
++                    }
++                }
++            }
++            for row in 0..height {
++                for col in 0..width {
++                    let position = row * width + col;
++                    let chroma = row / 2 * (width / 2) + col / 2;
++                    let luma = i32::from(y[position]);
++                    let blue = i32::from(u[chroma]) - 128;
++                    let red = i32::from(v[chroma]) - 128;
++                    // Full-range 601 coefficients; chroma contributions are quantized independently.
++                    let channels = [
++                        luma + ((91881 * red) >> 16),
++                        luma + ((-22553 * blue) >> 16) + ((-46801 * red) >> 16),
++                        luma + ((116129 * blue) >> 16),
++                    ];
++                    for (output, channel) in rgba[position * 4..][..3].iter_mut().zip(channels) {
++                        *output = u8::try_from(channel.clamp(0, 255))
++                            .map_err(|_| AlphaMovieError::Entropy("RGB sample out of range"))?;
++                    }
++                    rgba[position * 4 + 3] = alpha[position];
++                }
++            }
++        } else if self.separate_alpha {
++            inflate_alpha(&self.bytes[record.alpha.clone()], 0)?;
++        }
++        Ok(AlphaMovieFrame {
++            index: record.index,
++            left: record.left,
++            top: record.top,
++            width: record.width,
++            height: record.height,
++            rgba,
++        })
++    }
++}
++
++fn read_record(
++    bytes: &[u8],
++    position: usize,
++    index: u32,
++    separate: bool,
++    limits: AlphaMovieLimits,
++) -> Result<FrameRecord, AlphaMovieError> {
++    let header_size = if separate { 24 } else { 20 };
++    let header_end = position
++        .checked_add(header_size)
++        .ok_or(AlphaMovieError::Format("frame header overflow"))?;
++    let header = bytes
++        .get(position..header_end)
++        .ok_or(AlphaMovieError::Format("truncated frame header"))?;
++    if &header[..4] != b"FRAM" || read_u32(header, 8)? != index {
++        return Err(AlphaMovieError::Format("invalid frame magic or sequence"));
++    }
++    let record_size = to_usize(read_u32(header, 4)?)?
++        .checked_add(8)
++        .ok_or(AlphaMovieError::Format("frame size overflow"))?;
++    if record_size < header_size {
++        return Err(AlphaMovieError::Format("frame size smaller than header"));
++    }
++    let end = position
++        .checked_add(record_size)
++        .ok_or(AlphaMovieError::Format("frame end overflow"))?;
++    if end > bytes.len() {
++        return Err(AlphaMovieError::Format("truncated frame payload"));
++    }
++    let width = read_u16(header, 16)?;
++    let height = read_u16(header, 18)?;
++    if width != 0 && height != 0 && (width % 16 != 0 || height % 16 != 0) {
++        return Err(AlphaMovieError::Format(
++            "rectangle is not macroblock aligned",
++        ));
++    }
++    let pixels = usize::from(width)
++        .checked_mul(usize::from(height))
++        .ok_or(AlphaMovieError::ResourceLimit("pixel count overflow"))?;
++    if pixels > limits.max_frame_pixels {
++        return Err(AlphaMovieError::ResourceLimit("frame pixels"));
++    }
++    let alpha_size = if separate {
++        to_usize(read_u32(header, 20)?)?
++    } else {
++        0
++    };
++    let entropy_start = header_end
++        .checked_add(alpha_size)
++        .ok_or(AlphaMovieError::Format("alpha size overflow"))?;
++    if entropy_start > end {
++        return Err(AlphaMovieError::Format("alpha exceeds frame payload"));
++    }
++    Ok(FrameRecord {
++        index,
++        left: read_u16(header, 12)?,
++        top: read_u16(header, 14)?,
++        width,
++        height,
++        alpha: header_end..entropy_start,
++        entropy: entropy_start..end,
++    })
++}
++
++fn inflate_alpha(compressed: &[u8], pixels: usize) -> Result<Vec<u8>, AlphaMovieError> {
++    let mut alpha = buffer(
++        pixels
++            .checked_add(1)
++            .ok_or(AlphaMovieError::ResourceLimit("alpha size overflow"))?,
++    )?;
++    let mut inflater = Decompress::new(true);
++    let status = inflater
++        .decompress(compressed, &mut alpha, FlushDecompress::Finish)
++        .map_err(|error| AlphaMovieError::Alpha(error.to_string()))?;
++    if status != Status::StreamEnd
++        || inflater.total_out()
++            != u64::try_from(pixels)
++                .map_err(|_| AlphaMovieError::ResourceLimit("alpha size overflow"))?
++        || inflater.total_in()
++            != u64::try_from(compressed.len())
++                .map_err(|_| AlphaMovieError::ResourceLimit("compressed size overflow"))?
++    {
++        return Err(AlphaMovieError::Alpha(
++            "alpha stream has wrong decoded size or trailing bytes".into(),
++        ));
++    }
++    alpha.truncate(pixels);
++    Ok(alpha)
++}
++
++fn buffer(size: usize) -> Result<Vec<u8>, AlphaMovieError> {
++    let mut bytes = Vec::new();
++    bytes
++        .try_reserve_exact(size)
++        .map_err(|error| AlphaMovieError::Allocation(error.to_string()))?;
++    bytes.resize(size, 0);
++    Ok(bytes)
++}
++
++fn to_usize(value: u32) -> Result<usize, AlphaMovieError> {
++    usize::try_from(value).map_err(|_| AlphaMovieError::Format("size exceeds address space"))
++}
++
++fn read_u32(bytes: &[u8], offset: usize) -> Result<u32, AlphaMovieError> {
++    let slice = bytes
++        .get(offset..offset + 4)
++        .ok_or(AlphaMovieError::Format("truncated integer"))?;
++    Ok(u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
++}
++
++fn read_u16(bytes: &[u8], offset: usize) -> Result<u16, AlphaMovieError> {
++    let slice = bytes
++        .get(offset..offset + 2)
++        .ok_or(AlphaMovieError::Format("truncated integer"))?;
++    Ok(u16::from_le_bytes([slice[0], slice[1]]))
++}
+diff --git a/crates/platform/media/src/alpha_movie/entropy.rs b/crates/platform/media/src/alpha_movie/entropy.rs
+new file mode 100644
+index 0000000..bb001d1
+--- /dev/null
++++ b/crates/platform/media/src/alpha_movie/entropy.rs
+@@ -0,0 +1,223 @@
++//! Raw baseline Huffman coefficients without JPEG markers or byte stuffing.
++
++use super::{AlphaMovieError, idct};
++
++const DC_LUMA_BITS: [u8; 17] = [
++    0x00, 0x00, 0x01, 0x05, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++    0x00,
++];
++
++const AC_LUMA_BITS: [u8; 17] = [
++    0x00, 0x00, 0x02, 0x01, 0x03, 0x03, 0x02, 0x04, 0x03, 0x05, 0x05, 0x04, 0x04, 0x00, 0x00, 0x01,
++    0x7d,
++];
++
++const AC_LUMA_VALUES: [u8; 162] = [
++    0x01, 0x02, 0x03, 0x00, 0x04, 0x11, 0x05, 0x12, 0x21, 0x31, 0x41, 0x06, 0x13, 0x51, 0x61, 0x07,
++    0x22, 0x71, 0x14, 0x32, 0x81, 0x91, 0xa1, 0x08, 0x23, 0x42, 0xb1, 0xc1, 0x15, 0x52, 0xd1, 0xf0,
++    0x24, 0x33, 0x62, 0x72, 0x82, 0x09, 0x0a, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x25, 0x26, 0x27, 0x28,
++    0x29, 0x2a, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3a, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49,
++    0x4a, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5a, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69,
++    0x6a, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7a, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89,
++    0x8a, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9a, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7,
++    0xa8, 0xa9, 0xaa, 0xb2, 0xb3, 0xb4, 0xb5, 0xb6, 0xb7, 0xb8, 0xb9, 0xba, 0xc2, 0xc3, 0xc4, 0xc5,
++    0xc6, 0xc7, 0xc8, 0xc9, 0xca, 0xd2, 0xd3, 0xd4, 0xd5, 0xd6, 0xd7, 0xd8, 0xd9, 0xda, 0xe1, 0xe2,
++    0xe3, 0xe4, 0xe5, 0xe6, 0xe7, 0xe8, 0xe9, 0xea, 0xf1, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7, 0xf8,
++    0xf9, 0xfa,
++];
++
++const DC_CHROMA_BITS: [u8; 17] = [
++    0x00, 0x00, 0x03, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00,
++    0x00,
++];
++
++const AC_CHROMA_BITS: [u8; 17] = [
++    0x00, 0x00, 0x02, 0x01, 0x02, 0x04, 0x04, 0x03, 0x04, 0x07, 0x05, 0x04, 0x04, 0x00, 0x01, 0x02,
++    0x77,
++];
++
++const AC_CHROMA_VALUES: [u8; 162] = [
++    0x00, 0x01, 0x02, 0x03, 0x11, 0x04, 0x05, 0x21, 0x31, 0x06, 0x12, 0x41, 0x51, 0x07, 0x61, 0x71,
++    0x13, 0x22, 0x32, 0x81, 0x08, 0x14, 0x42, 0x91, 0xa1, 0xb1, 0xc1, 0x09, 0x23, 0x33, 0x52, 0xf0,
++    0x15, 0x62, 0x72, 0xd1, 0x0a, 0x16, 0x24, 0x34, 0xe1, 0x25, 0xf1, 0x17, 0x18, 0x19, 0x1a, 0x26,
++    0x27, 0x28, 0x29, 0x2a, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3a, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48,
++    0x49, 0x4a, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5a, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68,
++    0x69, 0x6a, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7a, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87,
++    0x88, 0x89, 0x8a, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9a, 0xa2, 0xa3, 0xa4, 0xa5,
++    0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xb2, 0xb3, 0xb4, 0xb5, 0xb6, 0xb7, 0xb8, 0xb9, 0xba, 0xc2, 0xc3,
++    0xc4, 0xc5, 0xc6, 0xc7, 0xc8, 0xc9, 0xca, 0xd2, 0xd3, 0xd4, 0xd5, 0xd6, 0xd7, 0xd8, 0xd9, 0xda,
++    0xe2, 0xe3, 0xe4, 0xe5, 0xe6, 0xe7, 0xe8, 0xe9, 0xea, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7, 0xf8,
++    0xf9, 0xfa,
++];
++
++const DC_VALUES: [u8; 12] = [
++    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
++];
++
++const NATURAL_ORDER: [u8; 64] = [
++    0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5, 12, 19, 26, 33, 40, 48, 41, 34, 27, 20,
++    13, 6, 7, 14, 21, 28, 35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51, 58, 59,
++    52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63,
++];
++
++struct Bits<'a> {
++    bytes: &'a [u8],
++    byte: usize,
++    bit: u8,
++}
++
++impl Bits<'_> {
++    fn read(&mut self, count: u8) -> Result<i32, AlphaMovieError> {
++        let mut value = 0;
++        for _ in 0..count {
++            let byte = self
++                .bytes
++                .get(self.byte)
++                .ok_or(AlphaMovieError::Entropy("truncated coefficient bits"))?;
++            value = (value << 1) | i32::from((byte >> (7 - self.bit)) & 1);
++            self.bit += 1;
++            if self.bit == 8 {
++                self.bit = 0;
++                self.byte += 1;
++            }
++        }
++        Ok(value)
++    }
++
++    fn signed(&mut self, count: u8) -> Result<i32, AlphaMovieError> {
++        if count == 0 {
++            return Ok(0);
++        }
++        let value = self.read(count)?;
++        Ok(if value < 1 << (count - 1) {
++            value + 1 - (1 << count)
++        } else {
++            value
++        })
++    }
++
++    fn symbol(&mut self, lengths: &[u8; 17], symbols: &[u8]) -> Result<u8, AlphaMovieError> {
++        let mut code = 0;
++        let mut first = 0;
++        let mut offset = 0;
++        for &count in &lengths[1..] {
++            code = (code << 1) | self.read(1)?;
++            let difference = code - first;
++            if difference >= 0 && difference < i32::from(count) {
++                let index = usize::try_from(difference)
++                    .map_err(|_| AlphaMovieError::Entropy("negative Huffman index"))?;
++                return symbols
++                    .get(offset + index)
++                    .copied()
++                    .ok_or(AlphaMovieError::Entropy("invalid Huffman symbol"));
++            }
++            offset += usize::from(count);
++            first = (first + i32::from(count)) << 1;
++        }
++        Err(AlphaMovieError::Entropy("invalid Huffman code"))
++    }
++}
++
++pub(super) struct Decoder<'a> {
++    bits: Bits<'a>,
++    luma_dc: i32,
++    chroma_dc: i32,
++}
++
++impl<'a> Decoder<'a> {
++    pub(super) const fn new(bytes: &'a [u8]) -> Self {
++        Self {
++            bits: Bits {
++                bytes,
++                byte: 0,
++                bit: 0,
++            },
++            luma_dc: 0,
++            chroma_dc: 0,
++        }
++    }
++
++    pub(super) fn luma(
++        &mut self,
++        quantization: &[u8; 64],
++        pixels: &mut [u8],
++        pitch: usize,
++    ) -> Result<(), AlphaMovieError> {
++        self.block(quantization, pixels, pitch, false)
++    }
++
++    pub(super) fn chroma(
++        &mut self,
++        quantization: &[u8; 64],
++        pixels: &mut [u8],
++        pitch: usize,
++    ) -> Result<(), AlphaMovieError> {
++        self.block(quantization, pixels, pitch, true)
++    }
++
++    fn block(
++        &mut self,
++        quantization: &[u8; 64],
++        pixels: &mut [u8],
++        pitch: usize,
++        chroma: bool,
++    ) -> Result<(), AlphaMovieError> {
++        let (dc_bits, ac_bits, ac_values, previous) = if chroma {
++            (
++                &DC_CHROMA_BITS,
++                &AC_CHROMA_BITS,
++                &AC_CHROMA_VALUES,
++                &mut self.chroma_dc,
++            )
++        } else {
++            (
++                &DC_LUMA_BITS,
++                &AC_LUMA_BITS,
++                &AC_LUMA_VALUES,
++                &mut self.luma_dc,
++            )
++        };
++        let size = self.bits.symbol(dc_bits, &DC_VALUES)?;
++        let dc = previous
++            .checked_add(self.bits.signed(size)?)
++            .ok_or(AlphaMovieError::Entropy("DC predictor overflow"))?;
++        let dc = i16::try_from(dc)
++            .map_err(|_| AlphaMovieError::Entropy("DC coefficient exceeds signed 16-bit range"))?;
++        *previous = i32::from(dc);
++        let mut coefficients = [0_i32; 64];
++        coefficients[0] = i32::from(dc);
++        let mut index = 1;
++        while index < 64 {
++            let symbol = self.bits.symbol(ac_bits, ac_values)?;
++            let run = usize::from(symbol >> 4);
++            let size = symbol & 15;
++            if size == 0 {
++                if run == 0 {
++                    break;
++                }
++                if run != 15 || index + 16 > 64 {
++                    return Err(AlphaMovieError::Entropy("AC zero run exceeds block"));
++                }
++                index += 16;
++            } else {
++                index += run;
++                if index >= 64 {
++                    return Err(AlphaMovieError::Entropy("AC coefficient exceeds block"));
++                }
++                coefficients[usize::from(NATURAL_ORDER[index])] = self.bits.signed(size)?;
++                index += 1;
++            }
++        }
++        if index == 1 {
++            let sample = (i32::from(dc) * i32::from(quantization[0]) / 8 + 128).clamp(0, 255);
++            let sample = u8::try_from(sample)
++                .map_err(|_| AlphaMovieError::Entropy("DC sample out of range"))?;
++            for row in 0..8 {
++                pixels[row * pitch..][..8].fill(sample);
++            }
++        } else {
++            idct::transform(&coefficients, quantization, pixels, pitch);
++        }
++        Ok(())
++    }
++}
+diff --git a/crates/platform/media/src/alpha_movie/idct.rs b/crates/platform/media/src/alpha_movie/idct.rs
+new file mode 100644
+index 0000000..c5c2ca4
+--- /dev/null
++++ b/crates/platform/media/src/alpha_movie/idct.rs
+@@ -0,0 +1,93 @@
++//! Integer ISLOW inverse DCT.
++//!
++//! Algorithm attribution: Independent JPEG Group, Copyright (C) 1991-1998
++//! Thomas G. Lane. The fixed-point constants implement the Loeffler transform.
++
++fn butterfly(input: [i64; 8]) -> [i64; 8] {
++    let z2 = input[2];
++    let z3 = input[6];
++    let z1 = (z2 + z3) * 4433;
++    let tmp2 = z1 - z3 * 15137;
++    let tmp3 = z1 + z2 * 6270;
++    let tmp0 = (input[0] + input[4]) << 13;
++    let tmp1 = (input[0] - input[4]) << 13;
++    let tmp10 = tmp0 + tmp3;
++    let tmp13 = tmp0 - tmp3;
++    let tmp11 = tmp1 + tmp2;
++    let tmp12 = tmp1 - tmp2;
++    let mut tmp0 = input[7];
++    let mut tmp1 = input[5];
++    let mut tmp2 = input[3];
++    let mut tmp3 = input[1];
++    let z1 = (tmp0 + tmp3) * -7373;
++    let z2 = (tmp1 + tmp2) * -20995;
++    let z3 = tmp0 + tmp2;
++    let z4 = tmp1 + tmp3;
++    let z5 = (z3 + z4) * 9633;
++    let z3 = z3 * -16069 + z5;
++    let z4 = z4 * -3196 + z5;
++    tmp0 = tmp0 * 2446 + z1 + z3;
++    tmp1 = tmp1 * 16819 + z2 + z4;
++    tmp2 = tmp2 * 25172 + z2 + z3;
++    tmp3 = tmp3 * 12299 + z1 + z4;
++    [
++        tmp10 + tmp3,
++        tmp11 + tmp2,
++        tmp12 + tmp1,
++        tmp13 + tmp0,
++        tmp13 - tmp0,
++        tmp12 - tmp1,
++        tmp11 - tmp2,
++        tmp10 - tmp3,
++    ]
++}
++
++pub(super) fn transform(
++    coefficients: &[i32; 64],
++    quantization: &[u8; 64],
++    pixels: &mut [u8],
++    pitch: usize,
++) {
++    let mut workspace = [0_i64; 64];
++    for col in 0..8 {
++        if (1..8).all(|row| coefficients[row * 8 + col] == 0) {
++            let dc = i64::from(coefficients[col]) * i64::from(quantization[col]) * 4;
++            for row in 0..8 {
++                workspace[row * 8 + col] = dc;
++            }
++        } else {
++            let mut input = [0; 8];
++            for (row, sample) in input.iter_mut().enumerate() {
++                *sample =
++                    i64::from(coefficients[row * 8 + col]) * i64::from(quantization[row * 8 + col]);
++            }
++            for (row, sample) in butterfly(input).into_iter().enumerate() {
++                workspace[row * 8 + col] = (sample + 1024) >> 11;
++            }
++        }
++    }
++    for row in 0..8 {
++        let input = std::array::from_fn(|col| workspace[row * 8 + col]);
++        if input[1..].iter().all(|&sample| sample == 0) {
++            pixels[row * pitch..][..8].fill(range_sample((input[0] + 16) >> 5));
++        } else {
++            for (col, sample) in butterfly(input).into_iter().enumerate() {
++                pixels[row * pitch + col] = range_sample((sample + 131072) >> 18);
++            }
++        }
++    }
++}
++
++fn range_sample(value: i64) -> u8 {
++    // The 10-bit range table saturates transform overshoot and wraps its tail.
++    let index = value & 1023;
++    if index <= 127 {
++        (index + 128).to_le_bytes()[0]
++    } else if index <= 511 {
++        255
++    } else if index <= 895 {
++        0
++    } else {
++        (index - 896).to_le_bytes()[0]
++    }
++}
+diff --git a/crates/platform/media/src/lib.rs b/crates/platform/media/src/lib.rs
+index 084b6f6..033ffad 100644
+--- a/crates/platform/media/src/lib.rs
++++ b/crates/platform/media/src/lib.rs
+@@ -47,6 +47,7 @@
+ #![cfg_attr(target_os = "android", deny(unsafe_code))]
+ #![warn(missing_docs)]
+ 
++pub mod alpha_movie;
+ pub mod audio;
+ #[cfg(feature = "video-ffmpeg")]
+ mod audio_ffmpeg;
+diff --git a/crates/platform/media/tests/alpha_movie.rs b/crates/platform/media/tests/alpha_movie.rs
+new file mode 100644
+index 0000000..97c5a3e
+--- /dev/null
++++ b/crates/platform/media/tests/alpha_movie.rs
+@@ -0,0 +1,540 @@
++//! AJPM synthetic fixtures; no copyrighted game assets are embedded.
++use std::{io::Write, sync::Arc};
++
++use flate2::{Compression, write::ZlibEncoder};
++use media::alpha_movie::{AlphaMovie, AlphaMovieError, AlphaMovieLimits};
++
++fn limits() -> AlphaMovieLimits {
++    AlphaMovieLimits {
++        max_frames: 8,
++        max_frame_pixels: 1024,
++    }
++}
++
++fn append_u32(bytes: &mut Vec<u8>, value: u32) {
++    bytes.extend_from_slice(&value.to_le_bytes());
++}
++
++fn movie(attribute: u8, frames: &[(u16, u16, Vec<u8>)]) -> Vec<u8> {
++    let header_size = if attribute == 1 { 232_u32 } else { 168 };
++    let mut bytes = b"AJPM".to_vec();
++    for value in [
++        0,
++        0,
++        header_size,
++        0,
++        u32::try_from(frames.len()).unwrap(),
++        1001,
++        30000,
++    ] {
++        append_u32(&mut bytes, value);
++    }
++    bytes.extend_from_slice(&[13, 0, 15, 0, attribute, 0, 0, 0]);
++    bytes.resize(usize::try_from(header_size).unwrap(), 1);
++    for (index, (width, height, payload)) in frames.iter().enumerate() {
++        bytes.extend_from_slice(b"FRAM");
++        append_u32(&mut bytes, u32::try_from(payload.len()).unwrap() + 12);
++        append_u32(&mut bytes, u32::try_from(index).unwrap());
++        for value in [7_u16, 9, *width, *height] {
++            bytes.extend_from_slice(&value.to_le_bytes());
++        }
++        bytes.extend_from_slice(payload);
++    }
++    bytes
++}
++
++fn zero_entropy(block_alpha: bool) -> Vec<u8> {
++    // reference/cpp/plugins/AlphaMovie.cpp:35-99,918-944,1007-1037:
++    // chroma DC0+EOB is 00 00, luma DC0+EOB is 00 1010.
++    let mut bits = "00000000".to_owned();
++    for _ in 0..if block_alpha { 8 } else { 4 } {
++        bits.push_str("001010");
++    }
++    while !bits.len().is_multiple_of(8) {
++        bits.push('0');
++    }
++    bits.as_bytes()
++        .chunks(8)
++        .map(|chunk| chunk.iter().fold(0, |byte, bit| (byte << 1) | (bit - b'0')))
++        .collect()
++}
++
++fn separate_payload(alpha: &[u8]) -> Vec<u8> {
++    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
++    encoder.write_all(alpha).unwrap();
++    let compressed = encoder.finish().unwrap();
++    let mut payload = Vec::new();
++    append_u32(&mut payload, u32::try_from(compressed.len()).unwrap());
++    payload.extend_from_slice(&compressed);
++    payload.extend_from_slice(&zero_entropy(false));
++    payload
++}
++
++#[test]
++fn separate_alpha_preserves_rate_rectangle_and_straight_rgba() {
++    let alpha: Vec<_> = (0..256).map(|i| u8::try_from(i).unwrap()).collect();
++    let bytes = movie(2, &[(16, 16, separate_payload(&alpha))]);
++    let decoder = AlphaMovie::open(Arc::from(bytes), limits()).unwrap();
++    let metadata = decoder.metadata();
++    // reference/cpp/plugins/AlphaMovie.cpp:540-565,699-717.
++    assert_eq!(
++        (
++            metadata.num_frames,
++            metadata.fps_scale,
++            metadata.fps_rate,
++            metadata.width,
++            metadata.height
++        ),
++        (1, 1001, 30000, 13, 15)
++    );
++    let frame = decoder.decode(0).unwrap();
++    // reference/cpp/plugins/AlphaMovie.cpp:876-880,945-954,1199-1215.
++    assert_eq!(
++        (
++            frame.index,
++            frame.left,
++            frame.top,
++            frame.width,
++            frame.height
++        ),
++        (0, 7, 9, 16, 16)
++    );
++    for (pixel, alpha) in frame.rgba.as_chunks::<4>().0.iter().zip(alpha) {
++        // reference/cpp/plugins/AlphaMovie.cpp:833-838,949-954.
++        assert_eq!(pixel, &[128, 128, 128, alpha]);
++    }
++}
++
++#[test]
++fn block_alpha_and_empty_frames_decode_independently() {
++    let bytes = movie(1, &[(16, 16, zero_entropy(true)), (0, 0, vec![])]);
++    let decoder = AlphaMovie::open(Arc::from(bytes), limits()).unwrap();
++    let empty = decoder.decode(1).unwrap();
++    // reference/cpp/plugins/AlphaMovie.cpp:973-979,1048-1051.
++    assert_eq!(
++        (empty.index, empty.width, empty.height, empty.rgba.len()),
++        (1, 0, 0, 0)
++    );
++    let frame = decoder.decode(0).unwrap();
++    // reference/cpp/plugins/AlphaMovie.cpp:1013-1037,1040-1051.
++    assert!(
++        frame
++            .rgba
++            .as_chunks::<4>()
++            .0
++            .iter()
++            .all(|p| *p == [128, 128, 128, 128])
++    );
++    // reference/cpp/plugins/AlphaMovie.cpp:918-919,1005-1006.
++    assert_eq!(decoder.decode(0).unwrap().rgba, frame.rgba);
++    // reference/cpp/plugins/AlphaMovie.cpp:781-784.
++    assert!(matches!(
++        decoder.decode(2),
++        Err(AlphaMovieError::FrameOutOfRange { .. })
++    ));
++}
++
++#[test]
++fn entropy_decode_is_lazy_and_reports_truncation() {
++    let bytes = movie(1, &[(16, 16, zero_entropy(true)), (16, 16, vec![])]);
++    let decoder = AlphaMovie::open(Arc::from(bytes), limits()).unwrap();
++    // reference/cpp/plugins/AlphaMovie.cpp:958-974,1007-1037.
++    assert!(decoder.decode(0).is_ok());
++    // reference/cpp/plugins/AlphaMovie.cpp:958-974,1007-1037; bounded reader rejects missing bits.
++    assert!(matches!(
++        decoder.decode(1),
++        Err(AlphaMovieError::Entropy(_))
++    ));
++}
++
++#[test]
++fn malformed_containers_and_explicit_resource_limits_are_typed() {
++    let bytes = movie(1, &[(16, 16, zero_entropy(true))]);
++    for (offset, replacement) in [
++        (0, vec![0; 4]),
++        (8, vec![1, 0, 0, 0]),
++        (12, vec![0; 4]),
++        (24, vec![0; 4]),
++        (28, vec![0; 4]),
++        (32, vec![0; 2]),
++        (36, vec![0]),
++        (232, vec![0; 4]),
++    ] {
++        let mut corrupt = bytes.clone();
++        corrupt[offset..offset + replacement.len()].copy_from_slice(&replacement);
++        // reference/cpp/plugins/AlphaMovie.cpp:682-732,797-799.
++        assert!(
++            AlphaMovie::open(Arc::from(corrupt), limits()).is_err(),
++            "offset {offset}"
++        );
++    }
++    let mut truncated = bytes.clone();
++    truncated.pop();
++    // reference/cpp/plugins/AlphaMovie.cpp:962-967.
++    assert!(AlphaMovie::open(Arc::from(truncated), limits()).is_err());
++    // reference/cpp/plugins/AlphaMovie.cpp:973-981; allocation is caller-bounded.
++    assert!(matches!(
++        AlphaMovie::open(
++            Arc::from(bytes),
++            AlphaMovieLimits {
++                max_frames: 8,
++                max_frame_pixels: 255
++            }
++        ),
++        Err(AlphaMovieError::ResourceLimit(_))
++    ));
++}
++
++#[test]
++fn separate_alpha_rejects_short_long_and_corrupt_zlib_planes() {
++    for alpha in [vec![42; 255], vec![42; 257]] {
++        let bytes = movie(2, &[(16, 16, separate_payload(&alpha))]);
++        let decoder = AlphaMovie::open(Arc::from(bytes), limits()).unwrap();
++        // reference/cpp/plugins/AlphaMovie.cpp:886-895; width*height is the exact alpha plane size.
++        assert!(matches!(decoder.decode(0), Err(AlphaMovieError::Alpha(_))));
++    }
++    let mut payload = separate_payload(&vec![42; 256]);
++    payload[4] ^= 0xff;
++    let decoder = AlphaMovie::open(Arc::from(movie(2, &[(16, 16, payload)])), limits()).unwrap();
++    // reference/cpp/plugins/AlphaMovie.cpp:886-895.
++    assert!(matches!(decoder.decode(0), Err(AlphaMovieError::Alpha(_))));
++}
++
++fn dc_block(bits: &mut String, difference: i32, chroma: bool) {
++    let prefixes = if chroma {
++        [
++            "00",
++            "01",
++            "10",
++            "110",
++            "1110",
++            "11110",
++            "111110",
++            "1111110",
++            "11111110",
++            "111111110",
++            "1111111110",
++            "11111111110",
++        ]
++    } else {
++        [
++            "00",
++            "010",
++            "011",
++            "100",
++            "101",
++            "110",
++            "1110",
++            "11110",
++            "111110",
++            "1111110",
++            "11111110",
++            "111111110",
++        ]
++    };
++    let size = usize::try_from(difference.unsigned_abs().ilog2().saturating_add(1)).unwrap();
++    bits.push_str(prefixes[size]);
++    let encoded = if difference < 0 {
++        (1_i32 << size) - 1 + difference
++    } else {
++        difference
++    };
++    for shift in (0..size).rev() {
++        bits.push(if encoded & (1 << shift) == 0 {
++            '0'
++        } else {
++            '1'
++        });
++    }
++    bits.push_str(if chroma { "00" } else { "1010" });
++}
++
++fn colored_entropy(block_alpha: bool) -> Vec<u8> {
++    let mut bits = String::new();
++    // reference/cpp/plugins/AlphaMovie.cpp:918-944,1007-1037:
++    // both chroma components share a predictor, as do luma and block alpha.
++    dc_block(&mut bits, 64, true);
++    dc_block(&mut bits, -128, true);
++    dc_block(&mut bits, 64, false);
++    for _ in 0..3 {
++        bits.push_str("001010");
++    }
++    if block_alpha {
++        dc_block(&mut bits, -64, false);
++        for _ in 0..3 {
++            bits.push_str("001010");
++        }
++    }
++    while !bits.len().is_multiple_of(8) {
++        bits.push('0');
++    }
++    bits.as_bytes()
++        .chunks(8)
++        .map(|chunk| chunk.iter().fold(0, |byte, bit| (byte << 1) | (bit - b'0')))
++        .collect()
++}
++
++#[test]
++fn chroma_order_shared_predictors_and_full_range_conversion() {
++    for attribute in [1, 2] {
++        let payload = if attribute == 1 {
++            colored_entropy(true)
++        } else {
++            let mut payload = separate_payload(&vec![128; 256]);
++            payload.truncate(payload.len() - zero_entropy(false).len());
++            payload.extend_from_slice(&colored_entropy(false));
++            payload
++        };
++        let decoder =
++            AlphaMovie::open(Arc::from(movie(attribute, &[(16, 16, payload)])), limits()).unwrap();
++        let frame = decoder.decode(0).unwrap();
++        // reference/cpp/plugins/AlphaMovie.cpp:945-954,1040-1051.
++        // Independent swscale probe: Y=136 U=120 V=136 A=128, full range,
++        // fast_bilinear to RGBA yields (147,132,121,128) for every pixel.
++        assert!(
++            frame
++                .rgba
++                .as_chunks::<4>()
++                .0
++                .iter()
++                .all(|pixel| *pixel == [147, 132, 121, 128])
++        );
++    }
++}
++
++#[test]
++fn nonzero_ac_matches_scalar_integer_idct() {
++    let mut bits = "00000000".to_owned();
++    // reference/cpp/plugins/AlphaMovie.cpp:35-64,298-322: luma DC0,
++    // AC(0,7)=11111000, coefficient +64=1000000, EOB=1010.
++    bits.push_str("001111100010000001010");
++    for _ in 0..7 {
++        bits.push_str("001010");
++    }
++    while !bits.len().is_multiple_of(8) {
++        bits.push('0');
++    }
++    let entropy: Vec<_> = bits
++        .as_bytes()
++        .chunks(8)
++        .map(|chunk| chunk.iter().fold(0, |byte, bit| (byte << 1) | (bit - b'0')))
++        .collect();
++    let decoder = AlphaMovie::open(Arc::from(movie(1, &[(16, 16, entropy)])), limits()).unwrap();
++    let frame = decoder.decode(0).unwrap();
++    let expected = [139, 137, 134, 130, 126, 122, 119, 117];
++    for row in 0..16 {
++        for col in 0..16 {
++            let y = if row < 8 && col < 8 {
++                expected[col]
++            } else {
++                128
++            };
++            // reference/cpp/plugins/AlphaMovie.cpp:360-514: independent g++
++            // extraction of scalar IDCT, quantization all1 and natural AC1=64.
++            assert_eq!(&frame.rgba[(row * 16 + col) * 4..][..4], &[y, y, y, 128]);
++        }
++    }
++}
++
++#[test]
++fn block_alpha_high_frequency_ac_matches_two_pass_idct() {
++    let mut bits = "00000000".to_owned();
++    for _ in 0..4 {
++        bits.push_str("001010");
++    }
++    // reference/cpp/plugins/AlphaMovie.cpp:35-64,298-322: DC0, three ZRL,
++    // AC(run14,size7), -64. The last coefficient ends the block without EOB.
++    bits.push_str("00");
++    for _ in 0..3 {
++        bits.push_str("11111111001");
++    }
++    bits.push_str("11111111111100010111111");
++    for _ in 0..3 {
++        bits.push_str("001010");
++    }
++    while !bits.len().is_multiple_of(8) {
++        bits.push('0');
++    }
++    let entropy: Vec<_> = bits
++        .as_bytes()
++        .chunks(8)
++        .map(|chunk| chunk.iter().fold(0, |byte, bit| (byte << 1) | (bit - b'0')))
++        .collect();
++    let decoder = AlphaMovie::open(Arc::from(movie(1, &[(16, 16, entropy)])), limits()).unwrap();
++    let frame = decoder.decode(0).unwrap();
++    let expected = [
++        [127, 130, 125, 131, 125, 131, 126, 129],
++        [130, 123, 135, 119, 137, 121, 133, 126],
++        [125, 135, 117, 141, 115, 139, 121, 131],
++        [131, 119, 141, 113, 143, 115, 137, 125],
++        [125, 137, 115, 143, 113, 141, 119, 131],
++        [131, 121, 139, 115, 141, 117, 135, 125],
++        [126, 133, 121, 137, 119, 135, 123, 130],
++        [129, 126, 131, 125, 131, 125, 130, 127],
++    ];
++    for row in 0..16 {
++        for col in 0..16 {
++            let alpha = if row < 8 && col < 8 {
++                expected[row][col]
++            } else {
++                128
++            };
++            // reference/cpp/plugins/AlphaMovie.cpp:360-514,1028-1037: independent
++            // scalar g++ kernel, quantization all1, natural AC63=-64.
++            assert_eq!(
++                &frame.rgba[(row * 16 + col) * 4..][..4],
++                &[128, 128, 128, alpha]
++            );
++        }
++    }
++}
++
++#[test]
++fn all_container_truncations_and_frame_extent_overflows_fail() {
++    let bytes = movie(2, &[(16, 16, separate_payload(&vec![128; 256]))]);
++    for length in 0..bytes.len() {
++        // reference/cpp/plugins/AlphaMovie.cpp:677-681,736-739,876-897.
++        assert!(AlphaMovie::open(Arc::from(&bytes[..length]), limits()).is_err());
++    }
++    for (offset, value) in [(172, u32::MAX), (188, u32::MAX), (176, 1)] {
++        let mut corrupt = bytes.clone();
++        corrupt[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
++        // reference/cpp/plugins/AlphaMovie.cpp:797-799,876-897.
++        assert!(AlphaMovie::open(Arc::from(corrupt), limits()).is_err());
++    }
++}
++
++#[test]
++fn malformed_huffman_runs_and_predictor_overflows_are_typed() {
++    let mut bad_run = "0000000000".to_owned();
++    for _ in 0..4 {
++        bad_run.push_str("11111111001");
++    }
++    while !bad_run.len().is_multiple_of(8) {
++        bad_run.push('0');
++    }
++    let bad_run: Vec<_> = bad_run
++        .as_bytes()
++        .chunks(8)
++        .map(|chunk| chunk.iter().fold(0, |byte, bit| (byte << 1) | (bit - b'0')))
++        .collect();
++    for entropy in [vec![255; 64], bad_run] {
++        let decoder =
++            AlphaMovie::open(Arc::from(movie(1, &[(16, 16, entropy)])), limits()).unwrap();
++        // reference/cpp/plugins/AlphaMovie.cpp:252-263,298-332: Huffman
++        // lengths and AC runs must remain inside their code and block domains.
++        assert!(matches!(
++            decoder.decode(0),
++            Err(AlphaMovieError::Entropy(_))
++        ));
++    }
++    let mut overflow = String::new();
++    for _ in 0..4 {
++        overflow.push_str("00000000");
++        for _ in 0..8 {
++            dc_block(&mut overflow, 2047, false);
++        }
++    }
++    while !overflow.len().is_multiple_of(8) {
++        overflow.push('0');
++    }
++    let overflow: Vec<_> = overflow
++        .as_bytes()
++        .chunks(8)
++        .map(|chunk| chunk.iter().fold(0, |byte, bit| (byte << 1) | (bit - b'0')))
++        .collect();
++    let decoder = AlphaMovie::open(Arc::from(movie(1, &[(32, 32, overflow)])), limits()).unwrap();
++    // reference/cpp/plugins/AlphaMovie.cpp:291-292,851-855: coefficients
++    // occupy signed16 storage; malformed predictors must not wrap or panic.
++    assert!(matches!(
++        decoder.decode(0),
++        Err(AlphaMovieError::Entropy(_))
++    ));
++}
++
++#[test]
++fn quantization_uses_natural_coefficient_order() {
++    let mut bits = "0000000000".to_owned();
++    // reference/cpp/plugins/AlphaMovie.cpp:35-64,298-322: AC(run1,size7)
++    // targets zigzag index2, natural index8; +64 followed by EOB.
++    bits.push_str("111111111000010110000001010");
++    for _ in 0..7 {
++        bits.push_str("001010");
++    }
++    while !bits.len().is_multiple_of(8) {
++        bits.push('0');
++    }
++    let entropy: Vec<_> = bits
++        .as_bytes()
++        .chunks(8)
++        .map(|chunk| chunk.iter().fold(0, |byte, bit| (byte << 1) | (bit - b'0')))
++        .collect();
++    let mut bytes = movie(1, &[(16, 16, entropy)]);
++    bytes[40 + 8] = 2;
++    let decoder = AlphaMovie::open(Arc::from(bytes), limits()).unwrap();
++    let frame = decoder.decode(0).unwrap();
++    let expected = [150, 147, 141, 132, 124, 115, 109, 106];
++    for row in 0..16 {
++        for col in 0..16 {
++            let y = if row < 8 && col < 8 {
++                expected[row]
++            } else {
++                128
++            };
++            // reference/cpp/plugins/AlphaMovie.cpp:360-514,741-750:
++            // independent scalar g++ kernel, natural AC8=64, quant[8]=2.
++            assert_eq!(&frame.rgba[(row * 16 + col) * 4..][..4], &[y, y, y, 128]);
++        }
++    }
++}
++
++#[test]
++fn redundant_zero_run_preserves_negative_dc_idct_rounding() {
++    for attribute in [1, 2] {
++        for redundant_run in [false, true] {
++            let mut bits = "00000000".to_owned();
++            dc_block(&mut bits, -5, false);
++            if redundant_run {
++                bits.truncate(bits.len() - 4);
++                bits.push_str("111111110011010");
++            }
++            dc_block(&mut bits, 5, false);
++            for _ in 0..if attribute == 1 { 6 } else { 2 } {
++                bits.push_str("001010");
++            }
++            while !bits.len().is_multiple_of(8) {
++                bits.push('0');
++            }
++            let entropy: Vec<_> = bits
++                .as_bytes()
++                .chunks(8)
++                .map(|chunk| chunk.iter().fold(0, |byte, bit| (byte << 1) | (bit - b'0')))
++                .collect();
++            let payload = if attribute == 1 {
++                entropy
++            } else {
++                let mut payload = separate_payload(&vec![128; 256]);
++                payload.truncate(payload.len() - zero_entropy(false).len());
++                payload.extend_from_slice(&entropy);
++                payload
++            };
++            let decoder =
++                AlphaMovie::open(Arc::from(movie(attribute, &[(16, 16, payload)])), limits())
++                    .unwrap();
++            let frame = decoder.decode(0).unwrap();
++            for row in 0..16 {
++                for col in 0..16 {
++                    let y = if redundant_run && row < 8 && col < 8 {
++                        127
++                    } else {
++                        128
++                    };
++                    // reference/cpp/plugins/AlphaMovie.cpp:318-330,440-450,851-868:
++                    // DC=-5,q0=1 gives128 on immediate EOB via division, but
++                    // a ZRL then EOB returns17 and invokes rounded IDCT giving127.
++                    assert_eq!(&frame.rgba[(row * 16 + col) * 4..][..4], &[y, y, y, 128]);
++                }
++            }
++        }
++    }
++}

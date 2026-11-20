@@ -1,0 +1,39 @@
+{
+  "waiting": {
+    "type": "status",
+    "controller": false,
+    "epoch": null,
+    "ready": false,
+    "skip": false,
+    "available": [],
+    "supported": ["load", "menu", "quit", "rollback", "save", "skip"]
+  },
+  "ready": {
+    "type": "status",
+    "controller": true,
+    "epoch": "fixture-epoch",
+    "ready": true,
+    "skip": false,
+    "available": ["save", "quit"],
+    "supported": ["load", "menu", "quit", "rollback", "save", "skip"],
+    "quit_pending": false,
+    "last_quit_request": null
+  },
+  "stop": {
+    "type": "status",
+    "controller": true,
+    "epoch": "fixture-epoch",
+    "ready": true,
+    "skip": false,
+    "available": ["stop"],
+    "supported": ["stop"]
+  },
+  "rejected": {
+    "type": "action",
+    "state": "rejected",
+    "request_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "reason": "invalid_action"
+  },
+  "superseded": { "type": "superseded" },
+  "ended": { "type": "ended" }
+}

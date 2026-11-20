@@ -1,0 +1,25 @@
+services:
+  vn-stream:
+    image: ghcr.io/mr-righter/vn-stream:v1.0.0
+    platform: linux/amd64
+    restart: unless-stopped
+    shm_size: 1gb
+    ports:
+      - "127.0.0.1:8443:3000"
+    environment:
+      CUSTOM_USER: player
+      PASSWORD: "change-this-password"
+    volumes:
+      - type: bind
+        source: ./games
+        target: /games
+        bind:
+          create_host_path: false
+      - vn-stream-data:/data
+      - vn-stream-config:/config
+
+volumes:
+  vn-stream-data:
+    name: vn-stream-data
+  vn-stream-config:
+    name: vn-stream-config

@@ -1,0 +1,25 @@
+;$S640,480
+*define
+caption "Engine Adapter Smoke"
+savedir "save"
+game
+*start
+bg #112233,1
+fileexist %1,"load.request"
+if %1=1 goto *load
+mov %0,4242
+savegame 1
+*verify
+if %0=4242 goto *ok
+bg #cc0000,1
+wait 60000
+end
+*ok
+bg #00aa00,1
+wait 60000
+end
+*load
+loadgame 1
+bg #cc0000,1
+wait 60000
+end

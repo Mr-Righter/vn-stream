@@ -1,0 +1,62 @@
+--- a/cpp/core/base/CMakeLists.txt
++++ b/cpp/core/base/CMakeLists.txt
+@@ -39,7 +39,6 @@
+ target_link_libraries(${PROJECT_NAME} PUBLIC tjs2 PRIVATE core_visual_module core_plugin_module core_environ_module core_extension_module core_sound_module core_utils_module)
+ 
+ find_package(uchardet CONFIG REQUIRED)
+-find_package(unrar CONFIG REQUIRED)
+ find_package(LibArchive REQUIRED)
+ find_package(LibXml2 REQUIRED)
+ find_package(SDL2 CONFIG REQUIRED)
+@@ -48,7 +47,6 @@
+ 
+ target_link_libraries(${PROJECT_NAME} PRIVATE
+     uchardet::libuchardet
+-    unrar::unrar
+     LibArchive::LibArchive
+     LibXml2::LibXml2
+     zstd::libzstd
+@@ -57,3 +55,9 @@
+     $<IF:$<TARGET_EXISTS:SDL2::SDL2>,SDL2::SDL2,SDL2::SDL2-static>
+     unofficial::minizip::minizip
+ )
++
++if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
++    find_package(unrar CONFIG REQUIRED)
++    target_compile_definitions(${PROJECT_NAME} PRIVATE TVP_USE_UNRAR)
++    target_link_libraries(${PROJECT_NAME} PRIVATE unrar::unrar)
++endif()
+--- a/cpp/core/base/UtilStreams.cpp
++++ b/cpp/core/base/UtilStreams.cpp
+@@ -747,7 +747,7 @@
+     return psw.c_str();
+ }
+ 
+-#if 1
++#ifdef TVP_USE_UNRAR
+ 
+ #include <raros.hpp>
+ #include <dll.hpp>
+@@ -923,7 +923,7 @@
+     }
+     OutPath = _outpath + "/";
+     fclose(FpIn);
+-#ifdef _UNRAR_DLL_
++#ifdef TVP_USE_UNRAR
+     if(!memcmp(signature, "Rar!", 4)) {
+         _impl = new tTVPUnpackArchiveImplUnRAR();
+     } else
+--- a/vcpkg.json
++++ b/vcpkg.json
+@@ -106,7 +106,10 @@
+     "spdlog",
+     "highway",
+     "uchardet",
+-    "unrar",
++    {
++      "name": "unrar",
++      "platform": "!linux"
++    },
+     {
+       "name": "vcpkg-cmake",
+       "host": true

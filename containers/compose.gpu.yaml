@@ -1,0 +1,4 @@
+services:
+  vn-stream:
+    devices:
+      - /dev/dri:/dev/dri

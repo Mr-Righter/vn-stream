@@ -1,0 +1,24 @@
+#!/usr/bin/with-contenv bash
+set -euo pipefail
+export VN_STREAM_USERNAME="${CUSTOM_USER:-player}"
+export VN_STREAM_PASSWORD="${PASSWORD:?Set PASSWORD}"
+# The base window-manager service sets its own initial mode. Apply our idle
+# fallback after its WM appears, including existing persistent /config volumes.
+for attempt in $(seq 1 20); do
+  if s6-setuidgid abc xprop -root _NET_SUPPORTING_WM_CHECK 2>/dev/null | grep -q 'window id'; then
+    timeout 3 s6-setuidgid abc /lsiopy/bin/python3 /opt/vn-stream/lib/vn_stream/streaming/selkies_display.py 1920 1080 >/tmp/vn-stream-display-init.log 2>&1 || true
+    break
+  fi
+  sleep .25
+done
+extra_roots=()
+if [[ -n "${VN_STREAM_DISCOVERY_ROOTS:-}" ]]; then
+  while IFS= read -r root; do
+    [[ -z "$root" ]] && continue
+    extra_roots+=(--discovery-root "$root" --root "$root")
+  done <<< "$VN_STREAM_DISCOVERY_ROOTS"
+fi
+exec s6-setuidgid abc /opt/vn-stream/venv/bin/python -m vn_stream \
+  --host 127.0.0.1 --port 8000 --data /data --allow-local-http \
+  --library-root "${VN_STREAM_LIBRARY_ROOT:-/games}" \
+  "${extra_roots[@]}" --root /games --web /opt/vn-stream/web --stream-path / --public-prefix /library

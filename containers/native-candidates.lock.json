@@ -1,0 +1,319 @@
+{
+  "rust": "1.100.0",
+  "zig": "0.17.0",
+  "artifacts": [
+    {
+      "name": "rustc",
+      "url": "https://static.rust-lang.org/dist/2026-11-12/rustc-1.100.0-x86_64-unknown-linux-gnu.tar.xz",
+      "sha256": "f1d0b1dec81dab6f523cd098507763487b0d4bd7fd2c87582f154128719be03b"
+    },
+    {
+      "name": "rust-std",
+      "url": "https://static.rust-lang.org/dist/2026-11-12/rust-std-1.100.0-x86_64-unknown-linux-gnu.tar.xz",
+      "sha256": "4591b6486594ded52ecd6135db95bf9355bbd3ca7a380888b141528bbcf9a5d4"
+    },
+    {
+      "name": "cargo",
+      "url": "https://static.rust-lang.org/dist/2026-11-12/cargo-1.100.0-x86_64-unknown-linux-gnu.tar.xz",
+      "sha256": "7e29ce07d7c6e92d1826870575ba27d57fff6cb3e754aa57d99099cb88fab35d"
+    },
+    {
+      "name": "zig",
+      "url": "https://ziglang.org/download/0.17.0/zig-x86_64-linux-0.17.0.tar.xz",
+      "sha256": "1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026"
+    },
+    {
+      "name": "rustfmt",
+      "url": "https://static.rust-lang.org/dist/2026-11-12/rustfmt-1.100.0-x86_64-unknown-linux-gnu.tar.xz",
+      "sha256": "4c9389e4722b16499e5d47d89837ec84a4ef755f105ed2a84c038156064e01ab"
+    },
+    {
+      "name": "clippy",
+      "url": "https://static.rust-lang.org/dist/2026-11-12/clippy-1.100.0-x86_64-unknown-linux-gnu.tar.xz",
+      "sha256": "0d18df3bff6c852ef8243727fed075ecb33dbf93b8ab8c138c2f45e3f270102a"
+    }
+  ],
+  "builder_base": "sha256:dd6b9810d1ff86216d8d7267528a84fcbacce0e6738c654546c9a7cdb827db03",
+  "sources": {
+    "ons-new": {
+      "repository": "https://github.com/timftw21/ONScripter-NEW",
+      "commit": "8b11e69172e09ea1818e0cda37dd68a003b56644",
+      "input_files": {
+        "configure": "a5ef4a32270d3706e8aa2a2620abe4124faaee5029eaef1c73fe5981db900e5a"
+      }
+    },
+    "krkr-rs": {
+      "repository": "https://github.com/wqlouis/krkr-rs",
+      "commit": "05ee14ef76927b925e42a5acaeb740471440447c",
+      "input_files": {
+        "Cargo.lock": "bbf15e64c939cb0615e5688cbd0bf39106a1b1aeeb27248656b016e9d9d2e181",
+        "deps/build.zig.zon": "a05a84533defcfc00d49e787550815dee343906daaa008d9600ec2eafc8f9865"
+      }
+    },
+    "krkr-next": {
+      "repository": "https://github.com/reAAAq/KrKr2-Next",
+      "commit": "1abd1ed4e8aec7abd5d2524c3a9ad7886880602f",
+      "vcpkg_baseline": "b1e15efef6758eaa0beb0a8732cfa66f6a68a81d",
+      "input_files": {
+        "vcpkg.json": "a76b157b6632b766b282c27bd183a4d9db2435b0c636e8430e5c7820c02812a0",
+        "vcpkg-configuration.json": "efa8cdfa780fba112dd8fb4d0d78017c6613d8e3570a74663d899f70f4e3530f"
+      },
+      "linux_host_inputs": {
+        "containers/native-build/krkr-next/main.cpp": "2b14f856c3b2d4f28394be3c46454ce5773c52c34cee66016f1c71a773a1eaed",
+        "containers/native-build/krkr-next/CMakeLists.txt": "cbde83349e3bbef1431d21b934f4591700cd9a8285d3ae4200f84b13a551b21b",
+        "containers/native-patches/krkr/next-linux-egl.patch": "313bb0cc5dbdacbedb30bc4e85fce99d0978705c00a6999b7623a799d4e1aa71",
+        "containers/native-patches/krkr/next-linux-fonts.patch": "cbea7d76b3857d1d05034c8d24991ab0b71f19457a81bd90c38c5898fca8defa",
+        "containers/native-patches/krkr/next-linux-gdiplus.patch": "f05b67cc26d39708ad11fe967c02ef19859035a2ee1875e90a91ca2e0e1daf06",
+        "containers/native-patches/krkr/next-linux-headers.patch": "ae07e680ab1f0468f463aec6cff304061c281974792e7e0a3230ff142e71738e",
+        "containers/native-patches/krkr/next-linux-optional-live2d.patch": "ac046bb08111e30ff1e7999eb71dca76e31b7a1b2a7c6f7eef86bf61db3c9841",
+        "containers/native-patches/krkr/next-linux-sdl2.patch": "ef9017c09fa56e9ba3f12a21702ce2684b5aec4c37d106dc02fbfd9d88d159e6",
+        "containers/native-patches/krkr/next-host-modal.patch": "2760e153707fd3d8b272904874d87480276860cb84b8b18e7f276d62bc357961",
+        "containers/native-patches/krkr/next-native-media.patch": "f60e681b0a97ce74300db4c61b47208d2ac3632d26e29142889c50809a4919dd",
+        "containers/native-patches/krkr/next-worker-shutdown.patch": "126f2b5e0b0b91be99a0ee53e85e8a2a7228d4e079fe1b5af1666d732004422c",
+        "containers/native-build/krkr-next/README.txt": "527708ede786ab944c03642bfe50e0de135c54e510939e4d2738928c379b35be"
+      },
+      "linux_builder_image": "sha256:9008387b6b98e1723505e3d3dc8b3410f97cffee84ccadab35752d62ad8fbbf2",
+      "linux_patch_order": [
+        "containers/native-patches/krkr/next-linux-egl.patch",
+        "containers/native-patches/krkr/next-linux-fonts.patch",
+        "containers/native-patches/krkr/next-linux-gdiplus.patch",
+        "containers/native-patches/krkr/next-linux-headers.patch",
+        "containers/native-patches/krkr/next-linux-optional-live2d.patch",
+        "containers/native-patches/krkr/next-linux-sdl2.patch",
+        "containers/native-patches/krkr/next-host-modal.patch",
+        "containers/native-patches/krkr/next-native-media.patch",
+        "containers/native-patches/krkr/next-worker-shutdown.patch"
+      ],
+      "plugin_source": {
+        "repository": "https://github.com/Project-Shinkirou/kirikiroid2-web.git",
+        "commit": "f7c351ac3f4b82eb70b18d96e3c103f49f019b88",
+        "files": {
+          "cpp/plugins/AlphaMovie.cpp": "a613b36c11f8532e3532ffccd77d7605154732e014cd872d031b32adfe8c686a",
+          "cpp/plugins/kirikiroid2.cpp": "8b04b8e6cda8e72f01b8009953681a9335f29bb46a2023465ed0e847e6f3b1e4",
+          "LICENSE": "31887f008d3666961adb51572add59709c12eb56d39066fed62b5267d380042d"
+        }
+      }
+    }
+  },
+  "builder_image": "sha256:ece79792898d903c3975ae909c1deeb7bcb8e981abdbdb205cf9bcb8f02417da",
+  "zig_dependencies": [
+    {
+      "name": "fmt",
+      "url": "https://github.com/fmtlib/fmt/archive/refs/tags/10.2.1.tar.gz",
+      "package_hash": "N-V-__8AAC6NMwAvQbscvKb1VaN4g85RA3S5yld-1c0RfXHH",
+      "sha256": "1250e4cc58bf06ee631567523f48848dc4596133e163f02615c97f78bab6c811"
+    },
+    {
+      "name": "spdlog",
+      "url": "https://github.com/gabime/spdlog/archive/refs/tags/v1.14.1.tar.gz",
+      "package_hash": "N-V-__8AAJSgEQBm_CX16IKfCtcWMyIFbucHpA9_ojS59TbP",
+      "sha256": "1586508029a7d0670dfcb2d97575dcdc242d3868a259742b69f100801ab4e16b"
+    },
+    {
+      "name": "boost",
+      "url": "https://github.com/boostorg/boost/releases/download/boost-1.87.0/boost-1.87.0-b2-nodocs.tar.gz",
+      "package_hash": "N-V-__8AAEWNPBa4aeKN9QDVzlsod8_6QfovY_l0ItkR-2-C",
+      "sha256": "d6c69e4459eb5d6ec208250291221e7ff4a2affde9af6e49c9303b89c687461f"
+    },
+    {
+      "name": "oniguruma",
+      "url": "https://github.com/kkos/oniguruma/archive/refs/tags/v6.9.10.tar.gz",
+      "package_hash": "N-V-__8AAPwCMwB54AUHwsvlixvQkvI1tZ5pRs35ZHfr5Evi",
+      "sha256": "ad92309d0d13eebc27f6592e875f3efbfa3dda2bf6da5952e00f0a2120c921a8"
+    }
+  ],
+  "build_resources": {
+    "cpu_limit": 3,
+    "ons_memory_bytes": 6442450944,
+    "krkr_memory_bytes": 4294967296,
+    "cargo_jobs": 2
+  },
+  "profiles": {
+    "ons-new": [
+      "--std=gnu++23",
+      "--no-lto"
+    ],
+    "krkr-rs-runtime": {
+      "release": true,
+      "lto": "thin",
+      "codegen_units": 1,
+      "default_features": true,
+      "cxx": "clang++-19 -stdlib=libc++"
+    },
+    "krkr-rs-tests": {
+      "release": true,
+      "lto": "off",
+      "codegen_units": 16,
+      "default_features": true,
+      "cxx": "clang++-19 -stdlib=libc++"
+    }
+  },
+  "artifacts_built": {
+    "ons-new-public": {
+      "sha256": "c5f8b0e77540d18c86576a7fd8edcdfb3b4e919eb68d3c3b1673ea531bd4548f",
+      "installed": false
+    },
+    "ons-new-ordinary-script": {
+      "sha256": "dc607288b8bb9c0c7b40e00f548a8cbff7e2c53c83077ab2f0b56be75838adeb",
+      "installed": true,
+      "status": "manual-project-restricted",
+      "runtime_id": "ons:new:8b11e69172e0:dc607288b8bb"
+    },
+    "krkr-rs": {
+      "sha256": "9ca36df36323eb19879c19f8f01069e8fa517455d1c63d919abed0a447342b7e",
+      "installed": false
+    },
+    "krkr-rs-mdf": {
+      "sha256": "5c06a669a14ed66cb4067ddfd64d8d285dee8e4e99681409c00374ec9f8fc505",
+      "installed": false,
+      "status": "experimental",
+      "runtime_id": "krkr-rs-05ee14ef-mdf-20261117",
+      "patches": [
+        {
+          "path": "containers/native-patches/krkr/krkr-rs-mdf.patch",
+          "sha256": "5101c5043b3676dfe297955c218a71b4face5d0a9186ed37b8038ea56980827e"
+        }
+      ]
+    },
+    "krkr-rs-alpha-streaming": {
+      "sha256": "8c9eebe70d28b45eddd78d5d843dba5d0c07a5bfbef1daae4bd7eda3324110ee",
+      "installed": false,
+      "status": "experimental",
+      "runtime_id": "krkr-rs-05ee14ef-alpha-streaming-20261117",
+      "patches": [
+        {
+          "path": "containers/native-patches/krkr/krkr-rs-mdf.patch",
+          "sha256": "5101c5043b3676dfe297955c218a71b4face5d0a9186ed37b8038ea56980827e"
+        },
+        {
+          "path": "containers/native-patches/krkr/krkr-rs-test-baseline.patch",
+          "sha256": "d0ff03414c345850ee932bfcfc622608c217d698c3d86c5f875a5b823c37ba75"
+        },
+        {
+          "path": "containers/native-patches/krkr/krkr-rs-toolchain-hygiene.patch",
+          "sha256": "dace1f0db27a7fd506c8f35c9de3259328e0ad5bb7b68e98b757e133782148e1"
+        },
+        {
+          "path": "containers/native-patches/krkr/krkr-rs-ajpm-codec.patch",
+          "sha256": "400445a19635fbf89715134aa92637d9890ed2e25a0c955948e00a4d924b8781"
+        },
+        {
+          "path": "containers/native-patches/krkr/krkr-rs-alpha-streaming.patch",
+          "sha256": "bcacaeebec94c4594f529fce508b23227deaa619177cdb33c8e85fa84799b2b2"
+        }
+      ],
+      "license_files": {
+        "krkr-rs-alpha-streaming.LICENSE": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
+        "krkr-rs-alpha-streaming.LICENSE-IJG.txt": "75815e3bf6484201a3c3d17a1bbf10f2e8e3237f84df10a2357ea896db2a81d6",
+        "krkr-rs-alpha-streaming.README.txt": "319700422d7fa909d9275586f30bcb830cd983284144168dbaffeb040612684a"
+      }
+    },
+    "krkr-rs-alpha-cache": {
+      "sha256": "728cb31e2f674d8fe7b5a423aa5b693db66cb9e956db06a024f56038a135c0f4",
+      "installed": false,
+      "status": "removed-from-service",
+      "runtime_id": "krkr-rs-05ee14ef-alpha-cache-20261117",
+      "patches": [
+        {
+          "path": "containers/native-patches/krkr/krkr-rs-mdf.patch",
+          "sha256": "5101c5043b3676dfe297955c218a71b4face5d0a9186ed37b8038ea56980827e"
+        },
+        {
+          "path": "containers/native-patches/krkr/krkr-rs-test-baseline.patch",
+          "sha256": "d0ff03414c345850ee932bfcfc622608c217d698c3d86c5f875a5b823c37ba75"
+        },
+        {
+          "path": "containers/native-patches/krkr/krkr-rs-toolchain-hygiene.patch",
+          "sha256": "dace1f0db27a7fd506c8f35c9de3259328e0ad5bb7b68e98b757e133782148e1"
+        },
+        {
+          "path": "containers/native-patches/krkr/krkr-rs-ajpm-codec.patch",
+          "sha256": "400445a19635fbf89715134aa92637d9890ed2e25a0c955948e00a4d924b8781"
+        },
+        {
+          "path": "containers/native-patches/krkr/krkr-rs-alpha-streaming.patch",
+          "sha256": "bcacaeebec94c4594f529fce508b23227deaa619177cdb33c8e85fa84799b2b2"
+        },
+        {
+          "path": "containers/native-patches/krkr/krkr-rs-pending-cache.patch",
+          "sha256": "542dd30e8c8c2e3bba6f5bc05c1aebe87b976278e03e56cf2640c94c5b9f6516"
+        }
+      ],
+      "license_files": {
+        "krkr-rs-alpha-cache.LICENSE": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
+        "krkr-rs-alpha-cache.LICENSE-IJG.txt": "75815e3bf6484201a3c3d17a1bbf10f2e8e3237f84df10a2357ea896db2a81d6",
+        "krkr-rs-alpha-cache.README.txt": "b079cf21f0fa456b9c0ca1784a1b542e6cc6f1669cddf1f71a4da492051bd17e"
+      },
+      "installed_runtime_id": "krkr:rs:05ee14ef:728cb31e2f67"
+    },
+    "krkr-rs-modal": {
+      "sha256": "a24fa644dba7eb45ea5600b36c65336e035a329db7f5db56554488f019ce90c0",
+      "installed": true,
+      "status": "active-partial",
+      "runtime_id": "krkr:rs:05ee14ef:a24fa644dba7",
+      "patches": [
+        {
+          "path": "containers/native-patches/krkr/krkr-rs-mdf.patch",
+          "sha256": "5101c5043b3676dfe297955c218a71b4face5d0a9186ed37b8038ea56980827e"
+        },
+        {
+          "path": "containers/native-patches/krkr/krkr-rs-test-baseline.patch",
+          "sha256": "d0ff03414c345850ee932bfcfc622608c217d698c3d86c5f875a5b823c37ba75"
+        },
+        {
+          "path": "containers/native-patches/krkr/krkr-rs-toolchain-hygiene.patch",
+          "sha256": "dace1f0db27a7fd506c8f35c9de3259328e0ad5bb7b68e98b757e133782148e1"
+        },
+        {
+          "path": "containers/native-patches/krkr/krkr-rs-ajpm-codec.patch",
+          "sha256": "400445a19635fbf89715134aa92637d9890ed2e25a0c955948e00a4d924b8781"
+        },
+        {
+          "path": "containers/native-patches/krkr/krkr-rs-alpha-streaming.patch",
+          "sha256": "bcacaeebec94c4594f529fce508b23227deaa619177cdb33c8e85fa84799b2b2"
+        },
+        {
+          "path": "containers/native-patches/krkr/krkr-rs-pending-cache.patch",
+          "sha256": "542dd30e8c8c2e3bba6f5bc05c1aebe87b976278e03e56cf2640c94c5b9f6516"
+        },
+        {
+          "path": "containers/native-patches/krkr/krkr-rs-modal-window.patch",
+          "sha256": "eb8b786a55a68d79056e90b017e86da5931cfa57371672e79c81057da9db402a"
+        },
+        {
+          "path": "containers/native-patches/krkr/krkr-rs-layer-actions.patch",
+          "sha256": "e3dd0b32e4672ca9513f1b62f2c14444ac86504fb76316c31058cdd1996066ae"
+        },
+        {
+          "path": "containers/native-patches/krkr/krkr-rs-kag-macro-restore.patch",
+          "sha256": "b0bfb4b80464fc077c7c10ba36c4391a9e86245a57d53308b2c8f5a52b6038df"
+        }
+      ],
+      "license_files": {
+        "krkr-rs-modal.LICENSE": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
+        "krkr-rs-modal.LICENSE-IJG.txt": "75815e3bf6484201a3c3d17a1bbf10f2e8e3237f84df10a2357ea896db2a81d6",
+        "krkr-rs-modal.README.txt": "beccd047af75b2eb3364cd206258398c72dd74ee6a4d61b2cb818abe36047d1a",
+        "krkr-rs-modal.corosensei-LICENSE-MIT": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+        "krkr-rs-modal.corosensei-LICENSE-APACHE": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+      },
+      "installed_runtime_id": "krkr:rs:05ee14ef:a24fa644dba7"
+    },
+    "krkr-next-linux-host": {
+      "sha256": "d5f7fc94ccb73bbdd08cde8598e0e5a5362ba609cbd0b394018f4c9253995bb0",
+      "engine_api_sha256": "8effecfd6c2d134f6083effec9b5aa7e993a859c0794197f7209ad62e9eb8543",
+      "installed": true,
+      "status": "validated-manual-candidate",
+      "graphics_backend": "ANGLE desktop OpenGL on surfaceless Mesa (Intel UHD 630)",
+      "disabled_plugins": [
+        "krkrlive2d",
+        "krkrgles"
+      ],
+      "compatibility": {
+        "LOVELYxCATION2": "title-input-audio-modal-save-restart-load-passed",
+        "stella": "blocked-Motion.D3DAdaptor",
+        "limelight": "blocked-Motion.D3DAdaptor"
+      },
+      "installed_runtime_id": "krkr:next:1abd1ed4e8ae:48714d55efdb66f2"
+    }
+  }
+}

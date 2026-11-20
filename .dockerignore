@@ -1,0 +1,49 @@
+.git
+.venv
+.tools
+var
+games
+saves
+runtimes
+downloads
+**/node_modules
+**/dist
+**/target
+**/__pycache__
+**/.hypothesis
+**/.mypy_cache
+**/.pytest_cache
+**/.ruff_cache
+**/playwright-report
+**/test-results
+**/.env
+**/.env.*
+**/*.log
+**/*.sqlite
+**/*.sqlite3
+**/*.sqlite3-*
+**/*.key
+*.zip
+*.apk
+*.rpa
+*.rpyc
+
+# Local deployment configuration and TLS CA/server keys must not enter build context.
+config/secrets
+config/local
+
+# Health probes may leave a local session cookie file.
+**/health.cookies
+
+# Python wheel build intermediates.
+build
+**/*.egg-info
+
+# Local execution ledgers and review scratch.
+.superpowers
+
+# Tests run from the checkout. The image builds the application and UI only.
+tests
+web/tests
+web/tests-container
+web/playwright*.config.ts

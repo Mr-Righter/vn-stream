@@ -1,0 +1,52 @@
+name: vn-stream
+services:
+  vn-stream:
+    image: "${VN_STREAM_IMAGE:-vn-stream:local}"
+    build:
+      context: ..
+      dockerfile: containers/Dockerfile
+    ports:
+      - "127.0.0.1:${VN_STREAM_PORT:-8443}:3000"
+    environment:
+      VN_STREAM_LIBRARY_ROOT: "${VN_STREAM_LIBRARY_ROOT:-/games}"
+      VN_STREAM_UPLOAD_MAX_BYTES: "${VN_STREAM_UPLOAD_MAX_BYTES:-21474836480}"
+      PUID: "${PUID:-1000}"
+      PGID: "${PGID:-1000}"
+      TZ: Asia/Shanghai
+      CUSTOM_USER: "${VN_STREAM_USERNAME:-player}"
+      NO_DECOR: "true"
+      PASSWORD: "${VN_STREAM_PASSWORD:?Set VN_STREAM_PASSWORD in config/local/service.env}"
+      START_DOCKER: "false"
+      HARDEN_DESKTOP: "true"
+      PIXELFLUX_WAYLAND: "false"
+      SELKIES_VIDEO_STREAMING_MODE: "false"
+      SELKIES_USE_PAINT_OVER_QUALITY: "true"
+      SELKIES_FRAMERATE: "30"
+      VN_STREAM_NATIVE_DISPLAY: "selkies"
+      RENPY_GL_VSYNC: "0"
+      SELKIES_ENABLE_RESIZE: "false"
+      SELKIES_ALLOWED_ORIGINS: ""
+      SELKIES_ENABLE_SHARING: "false"
+      SELKIES_MODE: "websockets"
+      SELKIES_ENABLE_DUAL_MODE: "false"
+      SELKIES_COMMAND_ENABLED: "false"
+      SELKIES_FILE_TRANSFERS: ""
+    volumes:
+      - type: bind
+        source: "${VN_STREAM_DATA:-../var}"
+        target: /data
+      - type: bind
+        source: "${VN_STREAM_GAMES:-../var/games}"
+        target: /games
+      - selkies-config:/config
+    shm_size: 1gb
+    restart: unless-stopped
+    stop_grace_period: 20s
+    healthcheck:
+      test: ["CMD", "s6-setuidgid", "abc", "/opt/vn-stream/venv/bin/python", "-m", "vn_stream.streaming.health"]
+      interval: 30s
+      timeout: 25s
+      start_period: 60s
+      retries: 3
+volumes:
+  selkies-config:

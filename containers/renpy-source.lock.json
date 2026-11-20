@@ -1,0 +1,160 @@
+{
+  "7.5.3": {
+    "build": {
+      "commit": "08687209018fe4ec031620454957f98e877e4af6",
+      "tag": "renpy-7.5.3.22090809",
+      "url": "https://github.com/renpy/renpy-build/tree/08687209018fe4ec031620454957f98e877e4af6"
+    },
+    "checksums_url": "https://www.renpy.org/dl/7.5.3/checksums.txt",
+    "engine": {
+      "sha256": "76ad915323cd4e77e8b8f1c872ac363927ec701f4ba0175b13db02fa624f5760",
+      "url": "https://www.renpy.org/dl/7.5.3/renpy-7.5.3-source.tar.bz2"
+    },
+    "license_url": "https://www.renpy.org/doc/html/license.html",
+    "pygame_sdl2": {
+      "sha256": "d9c134b1d6589ee0ee7fab52a8384e15fdcc86cb1d5757ee0b23c09dd45af516",
+      "url": "https://www.renpy.org/dl/7.5.3/pygame_sdl2-2.1.0-for-renpy-7.5.3.tar.gz"
+    },
+    "release_url": "https://www.renpy.org/release/7.5.3"
+  },
+  "7.8.2": {
+    "build": {
+      "commit": "8890842f2ff2d34b279598e4d77db135e5516b31",
+      "tag": "renpy-7.8.2.24090902",
+      "url": "https://github.com/renpy/renpy-build/tree/8890842f2ff2d34b279598e4d77db135e5516b31"
+    },
+    "checksums_url": "https://www.renpy.org/dl/7.8.2/checksums.txt",
+    "engine": {
+      "sha256": "9885d0f0e7d02a55aa2f8da5ac5d9c96803405e7ee5f2698d0cd693888719c08",
+      "url": "https://www.renpy.org/dl/7.8.2/renpy-7.8.2-source.tar.bz2"
+    },
+    "license_url": "https://www.renpy.org/doc/html/license.html",
+    "pygame_sdl2": {
+      "sha256": "edb62b95f794fed46564f1f468680707429327e40b340f3ff6cddced833b9ef2",
+      "url": "https://www.renpy.org/dl/7.8.2/pygame_sdl2-2.1.0+renpy7.8.2.tar.gz"
+    },
+    "release_url": "https://www.renpy.org/release/7.8.2"
+  },
+  "8.0.3": {
+    "build": {
+      "commit": "08687209018fe4ec031620454957f98e877e4af6",
+      "tag": "renpy-8.0.3.22090809",
+      "url": "https://github.com/renpy/renpy-build/tree/08687209018fe4ec031620454957f98e877e4af6"
+    },
+    "checksums_url": "https://www.renpy.org/dl/8.0.3/checksums.txt",
+    "engine": {
+      "sha256": "f6c9279bc9ab53c0afb1d35dae01e2e9bdfca57a8553039e2360987881f189ac",
+      "url": "https://www.renpy.org/dl/8.0.3/renpy-8.0.3-source.tar.bz2"
+    },
+    "license_url": "https://www.renpy.org/doc/html/license.html",
+    "pygame_sdl2": {
+      "sha256": "069113a2bd5dcfca9d30cf226228e5b619ecacf174152f1bd450efb97c4507db",
+      "url": "https://www.renpy.org/dl/8.0.3/pygame_sdl2-2.1.0-for-renpy-8.0.3.tar.gz"
+    },
+    "release_url": "https://www.renpy.org/release/8.0.3"
+  },
+  "8.1.3": {
+    "build": {
+      "commit": "b040baf351729bfbabfbb75b43d5606aa80dc6ed",
+      "tag": "renpy-8.1.3.23091805",
+      "url": "https://github.com/renpy/renpy-build/tree/b040baf351729bfbabfbb75b43d5606aa80dc6ed"
+    },
+    "checksums_url": "https://www.renpy.org/dl/8.1.3/checksums.txt",
+    "engine": {
+      "sha256": "e207b080acc6721eb51bdbb5f1021d18bb0b8bfb79116cf683dd9fdb5bf9cebc",
+      "url": "https://www.renpy.org/dl/8.1.3/renpy-8.1.3-source.tar.bz2"
+    },
+    "license_url": "https://www.renpy.org/doc/html/license.html",
+    "pygame_sdl2": {
+      "sha256": "9ab7ebb1101512ac3b7f0b5875e013a7ff00b4c9fbe31f692445f06193ce9762",
+      "url": "https://www.renpy.org/dl/8.1.3/pygame_sdl2-2.1.0+renpy8.1.3.tar.gz"
+    },
+    "release_url": "https://www.renpy.org/release/8.1.3"
+  },
+  "8.2.3": {
+    "build": {
+      "commit": "2ca334a6fd6a29384635dad0ab44db9c51a4fa58",
+      "tag": "renpy-8.2.3.24061702",
+      "url": "https://github.com/renpy/renpy-build/tree/2ca334a6fd6a29384635dad0ab44db9c51a4fa58"
+    },
+    "checksums_url": "https://www.renpy.org/dl/8.2.3/checksums.txt",
+    "engine": {
+      "sha256": "654927dbb92b16dce343cedbb35935f86fc43f5f36d1872b5708bc697241eaeb",
+      "url": "https://www.renpy.org/dl/8.2.3/renpy-8.2.3-source.tar.bz2"
+    },
+    "license_url": "https://www.renpy.org/doc/html/license.html",
+    "pygame_sdl2": {
+      "sha256": "c999d5161ca96ea1530bbb685b90efcb8427ddaac749f0abfa10cef9c3abc932",
+      "url": "https://www.renpy.org/dl/8.2.3/pygame_sdl2-2.1.0+renpy8.2.3.tar.gz"
+    },
+    "release_url": "https://www.renpy.org/release/8.2.3"
+  },
+  "8.3.2": {
+    "build": {
+      "commit": "8890842f2ff2d34b279598e4d77db135e5516b31",
+      "tag": "renpy-8.3.2.24090902",
+      "url": "https://github.com/renpy/renpy-build/tree/8890842f2ff2d34b279598e4d77db135e5516b31"
+    },
+    "checksums_url": "https://www.renpy.org/dl/8.3.2/checksums.txt",
+    "engine": {
+      "sha256": "4a9677b988d7bfcf9f028c1044accff6b00effe8ec2105814dab04ff473db80b",
+      "url": "https://www.renpy.org/dl/8.3.2/renpy-8.3.2-source.tar.bz2"
+    },
+    "license_url": "https://www.renpy.org/doc/html/license.html",
+    "pygame_sdl2": {
+      "sha256": "945b758b549efb69ad395aa6d913d58cc29767c70ba6d78030565f576ad58f7f",
+      "url": "https://www.renpy.org/dl/8.3.2/pygame_sdl2-2.1.0+renpy8.3.2.tar.gz"
+    },
+    "release_url": "https://www.renpy.org/release/8.3.2"
+  },
+  "8.3.7": {
+    "build": {
+      "commit": "7cca685a19d18d8d2c330616fdb160618b5a9669",
+      "tag": "renpy-8.3.7.25031702",
+      "url": "https://github.com/renpy/renpy-build/tree/7cca685a19d18d8d2c330616fdb160618b5a9669"
+    },
+    "checksums_url": "https://www.renpy.org/dl/8.3.7/checksums.txt",
+    "engine": {
+      "sha256": "fd33248d5eea506ff9017c535b5b77e17edf7a77ddaf1bcf542b9cd261ff3fe5",
+      "url": "https://www.renpy.org/dl/8.3.7/renpy-8.3.7-source.tar.bz2"
+    },
+    "license_url": "https://www.renpy.org/doc/html/license.html",
+    "pygame_sdl2": {
+      "sha256": "4630b82d7e9ff3e5a864cd3693b4ef093a8ae9e87c3c7cb9ff5ca7e69299febf",
+      "url": "https://www.renpy.org/dl/8.3.7/pygame_sdl2-2.1.0+renpy8.3.7.tar.gz"
+    },
+    "release_url": "https://www.renpy.org/release/8.3.7"
+  },
+  "8.4.1": {
+    "build": {
+      "commit": "bd462127ad439c2857e59a3e5406ca13b4514f1c",
+      "tag": "renpy-8.4.1.25072401",
+      "url": "https://github.com/renpy/renpy-build/tree/bd462127ad439c2857e59a3e5406ca13b4514f1c"
+    },
+    "checksums_url": "https://www.renpy.org/dl/8.4.1/checksums.txt",
+    "engine": {
+      "sha256": "29e185b090a59a2415beeaf29e4067471dfc5d4ff296eb53b63d3954e171f2a1",
+      "url": "https://www.renpy.org/dl/8.4.1/renpy-8.4.1-source.tar.bz2"
+    },
+    "license_url": "https://www.renpy.org/doc/html/license.html",
+    "pygame_sdl2": {
+      "sha256": "ac05762de19f2799784f23f474170b2dab0b63018b8b151291d6dc8afb8b93f8",
+      "url": "https://www.renpy.org/dl/8.4.1/pygame_sdl2-2.1.0+renpy8.4.1.tar.gz"
+    },
+    "release_url": "https://www.renpy.org/release/8.4.1"
+  },
+  "8.5.3": {
+    "build": {
+      "commit": "7bfab40c1174f622f644b24669afd5fb167fbb79",
+      "tag": "renpy-8.5.3.26051504",
+      "url": "https://github.com/renpy/renpy-build/tree/7bfab40c1174f622f644b24669afd5fb167fbb79"
+    },
+    "checksums_url": "https://www.renpy.org/dl/8.5.3/checksums.txt",
+    "engine": {
+      "sha256": "4fd3d7bca7349b0d182830d3cdcf65940fa32e66be1aea0b3690e048be6282a5",
+      "url": "https://www.renpy.org/dl/8.5.3/renpy-8.5.3-source.tar.bz2"
+    },
+    "license_url": "https://www.renpy.org/doc/html/license.html",
+    "release_url": "https://www.renpy.org/release/8.5.3"
+  }
+}

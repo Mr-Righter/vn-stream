@@ -1,0 +1,16 @@
+diff --git a/cpp/core/visual/FontImpl.cpp b/cpp/core/visual/FontImpl.cpp
+index b5a1e85..f567345 100644
+--- a/cpp/core/visual/FontImpl.cpp
++++ b/cpp/core/visual/FontImpl.cpp
+@@ -276,6 +276,11 @@ void TVPInitFontNames() {
+                     }) > 0;
+             };
+ 
++#if defined(__linux__) && !defined(__ANDROID__)
++            if(tryLoadFontDirect("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
++                                 "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"))
++                break;
++#endif
+ #if defined(__ANDROID__)
+             if(tryLoadFontDirect("/system/fonts/NotoSansCJK-Regular.ttc",
+                                  "/system/fonts/NotoSansCJK-Regular.ttc"))

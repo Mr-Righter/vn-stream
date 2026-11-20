@@ -1,0 +1,13 @@
+diff --git a/cpp/plugins/layerex_draw/CMakeLists.txt b/cpp/plugins/layerex_draw/CMakeLists.txt
+index b1a7ec4..f5514f0 100644
+--- a/cpp/plugins/layerex_draw/CMakeLists.txt
++++ b/cpp/plugins/layerex_draw/CMakeLists.txt
+@@ -20,7 +20,7 @@ else()
+     find_package(libgdiplus CONFIG REQUIRED)
+     target_link_libraries(${PROJECT_NAME} PRIVATE libgdiplus::libgdiplus)
+ 
+-    set(VCPKG_INSTALL_DIR "${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}")
++    set(VCPKG_INSTALL_DIR "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}")
+ 
+     # glibconfig
+     # https://invent.kde.org/frameworks/extra-cmake-modules/-/blob/master/find-modules/FindGLIB2.cmake

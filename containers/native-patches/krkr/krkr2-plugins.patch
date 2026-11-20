@@ -1,0 +1,84 @@
+diff --git a/cpp/core/visual/RenderManager.cpp b/cpp/core/visual/RenderManager.cpp
+index a41669c..4edb3f0 100644
+--- a/cpp/core/visual/RenderManager.cpp
++++ b/cpp/core/visual/RenderManager.cpp
+@@ -4819,7 +4819,14 @@ void TVPRegisterRenderManager(const char *name, iTVPRenderManager *(*func)()) {
+     _RenderManagerFactory->emplace(name, std::make_pair(func, nullptr));
+ }
+ 
++iTVPRenderManager *TVPCreateOpenGLRenderManager();
++
+ iTVPRenderManager *TVPGetRenderManager(const ttstr &name) {
++    static const bool registered = [] {
++        TVPRegisterRenderManager("opengl", TVPCreateOpenGLRenderManager);
++        return true;
++    }();
++    (void)registered;
+     auto it = _RenderManagerFactory->find(name);
+     if(it == _RenderManagerFactory->end()) {
+         TVPThrowExceptionMessage(TJS_W("unsupported renderer %1"), name);
+diff --git a/cpp/core/visual/impl/LayerBitmapImpl.cpp b/cpp/core/visual/impl/LayerBitmapImpl.cpp
+index a3fe3bd..43f3ece 100644
+--- a/cpp/core/visual/impl/LayerBitmapImpl.cpp
++++ b/cpp/core/visual/impl/LayerBitmapImpl.cpp
+@@ -464,7 +464,7 @@ void tTVPBitmap::SetPaletteCount(tjs_uint count) {
+ // tTVPNativeBaseBitmap
+ //---------------------------------------------------------------------------
+ tTVPNativeBaseBitmap::tTVPNativeBaseBitmap(
+-    /*tjs_uint w, tjs_uint h, tjs_uint bpp*/) {
++    /*tjs_uint w, tjs_uint h, tjs_uint bpp*/) : Bitmap(nullptr) {
+     TVPInializeFontRasterizers();
+     // TVPFontRasterizer->AddRef(); TODO
+ 
+diff --git a/cpp/core/visual/ogl/RenderManager_ogl.cpp b/cpp/core/visual/ogl/RenderManager_ogl.cpp
+index 6d49cf4..62aac3b 100644
+--- a/cpp/core/visual/ogl/RenderManager_ogl.cpp
++++ b/cpp/core/visual/ogl/RenderManager_ogl.cpp
+@@ -4959,4 +4959,7 @@ public:
+     }
+ };
+ 
+-REGISTER_RENDERMANAGER(TVPRenderManager_OpenGL, opengl);
++// A direct reference keeps this factory in static desktop links without the UI.
++iTVPRenderManager *TVPCreateOpenGLRenderManager() {
++    return new TVPRenderManager_OpenGL();
++}
+diff --git a/cpp/plugins/CMakeLists.txt b/cpp/plugins/CMakeLists.txt
+index d55b50e..5e71e6b 100644
+--- a/cpp/plugins/CMakeLists.txt
++++ b/cpp/plugins/CMakeLists.txt
+@@ -12,6 +12,16 @@ target_sources(${PROJECT_NAME} PRIVATE
+     dirlist.cpp
+     csvParser.cpp
+     layerExMovie.cpp
++    AlphaMovie.cpp
++    kirikiroid2.cpp
++    extrans/Main.cpp
++    extrans/wave.cpp
++    extrans/mosaic.cpp
++    extrans/turn.cpp
++    extrans/turntrans_table.cpp
++    extrans/rotatebase.cpp
++    extrans/rotatetrans.cpp
++    extrans/ripple.cpp
+     layerExBTOA.cpp
+     varfile.cpp
+     saveStruct.cpp
+diff --git a/cpp/plugins/psbfile/PSBValue.h b/cpp/plugins/psbfile/PSBValue.h
+index 1f89d0b..7c740a8 100644
+--- a/cpp/plugins/psbfile/PSBValue.h
++++ b/cpp/plugins/psbfile/PSBValue.h
+@@ -209,10 +209,10 @@ namespace PSB {
+             stream->ReadBuffer(&count, n);
+             entryLength = stream->ReadI8LE() -
+                 static_cast<std::uint32_t>(PSBObjType::NumberN8);
+-            if(entryLength < 1 || entryLength > 4 ||
++            if(entryLength > 4 || (entryLength == 0 && count != 0) ||
+                stream->GetPosition() > stream->GetSize() ||
+-               count >
+-                   (stream->GetSize() - stream->GetPosition()) / entryLength)
++               (entryLength != 0 && count >
++                   (stream->GetSize() - stream->GetPosition()) / entryLength))
+                 throw std::runtime_error("Invalid or truncated PSB array");
+             value.reserve(count);
+             for(std::uint32_t i = 0; i < count; ++i) {

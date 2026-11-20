@@ -1,0 +1,588 @@
+diff --git a/crates/compat/src/natives/visual/layer/events.rs b/crates/compat/src/natives/visual/layer/events.rs
+--- a/crates/compat/src/natives/visual/layer/events.rs
++++ b/crates/compat/src/natives/visual/layer/events.rs
+@@ -1,78 +1,97 @@
+-//! `Layer` event-handler members (group 2, plus the focus/transition
+-//! handlers).
+-//!
+-//! The reference declares these as native methods
+-//! (`TJS_BEGIN_NATIVE_METHOD_DECL(onClick)` …) that forward to the action
+-//! owner. The L3 event adapter / `BitmapLayerTreeOwner` (a separate agent)
+-//! dispatches them by name at runtime, so they are registered here as
+-//! assignable instance methods with a no-op default — exactly the same shape
+-//! `Timer.onTimer` and `MenuItem.onClick` use. A script override
+-//! (`layer.onClick = function …`) shadows the method; the adapter resolves
+-//! the object member by name and calls it.
+-//!
+-//! `onHitTest` is the one member that is not a no-op: the member is a plain
+-//! setter for the layer's hit flag, and the hit test reads that flag back
+-//! after it delivered the event, so the member is written out here.
+-//!
+-//! Argument counts follow the reference exactly: every handler builds its
+-//! event object behind `TVP_ACTION_INVOKE_BEGIN(argnum, …)`
+-//! (`reference/cpp/core/base/EventIntf.h:208-211`), whose first statement is
+-//! `if(numparams < (argnum)) return TJS_E_BADPARAMCOUNT;`. The check sits
+-//! inside `if(obj.Object)` on the action owner
+-//! (`reference/cpp/core/visual/LayerIntf.cpp:9970-9984`), and a normally
+-//! constructed layer always has one: the reference constructor stores
+-//! `ActionOwner = param[0]` (`LayerIntf.cpp:476`), i.e. the window object
+-//! passed to `new Layer(window, parent)`. The one exception is `onHitTest`,
+-//! whose check is unconditional (`LayerIntf.cpp:9960-9961`). Handlers with
+-//! `argnum == 0` (`onPaint`, `onMouseEnter`, …) can never fail the check.
++//! Layer default events forward named arguments to the constructor owner.
++//! Script overrides decide whether to delegate through these native methods.
+ 
+ use std::ffi::{c_char, c_int, c_void};
+-
+-use tjs::{NativeInstanceMethodDef, Value};
++use std::rc::Rc;
++
++use tjs::{NativeInstanceMethodDef, Tjs2Engine, TjsValue, Value};
+ 
+ use super::super::common::scene_mut;
+ use super::{LayerInst, bound};
+-use crate::native_util::{args, report_error, set_void};
++use crate::native_util::{args, report_error, set_void, value_as_string};
++use crate::natives::event::event_object;
+ use crate::natives::system::value_as_bool;
+ 
+-/// Define one event handler method with its reference `TVP_ACTION_INVOKE_BEGIN`
+-/// argument count.
++/// Copy an argument without changing its script-visible type or object context.
++fn set_argument(
++    host: &Tjs2Engine,
++    event: tjs::Tjs2ValueId,
++    name: &str,
++    value: &Value,
++) -> Result<(), String> {
++    let retained;
++    let value = match value.ty {
++        tjs::VAL_VOID => TjsValue::Void,
++        tjs::VAL_INTEGER => TjsValue::Integer(value.integer),
++        tjs::VAL_REAL => TjsValue::Real(value.real),
++        tjs::VAL_STRING => TjsValue::String(value_as_string(value)),
++        tjs::VAL_NULL => {
++            retained = host.retain_null()?;
++            TjsValue::Retained(retained.raw_id().as_ptr() as u64)
++        }
++        _ => {
++            retained = host.retain_object_arg(value)?;
++            TjsValue::Retained(retained.raw_id().as_ptr() as u64)
++        }
++    };
++    host.set_member(event, name, &value)
++}
++
++/// Build one event and release all native state before invoking script code.
++fn dispatch_action(
++    host: &Tjs2Engine,
++    owner: &tjs::DetachedValue,
++    target: *mut c_void,
++    name: &str,
++    arguments: &[Value],
++    members: &[&str],
++) -> Result<(), String> {
++    let event = event_object(host, name, target)?;
++    for (&member, argument) in members.iter().zip(arguments) {
++        set_argument(host, event.raw_id(), member, argument)?;
++    }
++    match host.member_read(owner.raw_id(), "action")? {
++        tjs::MemberRead::Void => {}
++        tjs::MemberRead::Object(action) => {
++            host.call_detached(
++                &action,
++                &[TjsValue::Retained(event.raw_id().as_ptr() as u64)],
++            )?;
++        }
++        _ => return Err("Layer action owner has a non-callable action member".to_owned()),
++    }
++    Ok(())
++}
++
++/// Each event declares its minimum arity and ordered dictionary members once.
+ macro_rules! event_method {
+-    ($name:ident, $method:literal, 0) => {
++    ($name:ident, $method:literal, $argnum:expr, [$($member:literal),* $(,)?]) => {
+         extern "C" fn $name(
+-            _engine: *mut c_void,
+-            _instance: *mut c_void,
+-            _argc: c_int,
+-            _argv: *const Value,
+-            out: *mut Value,
+-            _out_error: *mut *mut c_char,
+-            _objthis: *mut c_void,
+-        ) -> c_int {
+-            set_void(out);
+-            0
+-        }
+-    };
+-    ($name:ident, $method:literal, $argnum:expr) => {
+-        extern "C" fn $name(
+-            _engine: *mut c_void,
+-            _instance: *mut c_void,
++            engine: *mut c_void,
++            instance: *mut c_void,
+             argc: c_int,
+-            _argv: *const Value,
++            argv: *const Value,
+             out: *mut Value,
+             out_error: *mut *mut c_char,
+-            _objthis: *mut c_void,
++            objthis: *mut c_void,
+         ) -> c_int {
+-            if argc < $argnum {
+-                return report_error(
+-                    out_error,
+-                    concat!(
+-                        "Layer.",
+-                        $method,
+-                        ": requires ",
+-                        stringify!($argnum),
+-                        " arguments"
+-                    ),
+-                );
++            let Ok((resolved, _ctx)) = bound(engine) else {
++                return report_error(out_error, concat!("Layer.", $method, ": compat context is not bound"));
++            };
++            let owner = {
++                // SAFETY: this callback owns access to the live Layer payload.
++                let inst = unsafe { &*(instance as *const LayerInst) };
++                inst.action_owner.as_ref().map(Rc::clone)
++            };
++            if let Some(owner) = owner {
++                if argc < $argnum {
++                    return report_error(out_error, concat!("Layer.", $method, ": requires ", stringify!($argnum), " arguments"));
++                }
++                // SAFETY: the trampoline supplies argc live arguments until return.
++                let arguments = unsafe { args(argv, argc) };
++                if let Err(error) = dispatch_action(resolved.engine(), &owner, objthis, $method, arguments, &[$($member),*]) {
++                    return report_error(out_error, &error);
++                }
+             }
+             set_void(out);
+             0
+@@ -80,35 +99,82 @@
+     };
+ }
+ 
+-// The argument counts are the reference `TVP_ACTION_INVOKE_BEGIN(n, …)`
+-// literals (`reference/cpp/core/visual/LayerIntf.cpp:9944-10472`); each is
+-// paired with the member the reference registers at the same site.
+-event_method!(on_before_focus, "onBeforeFocus", 3);
+-event_method!(on_blur, "onBlur", 1);
+-event_method!(on_click, "onClick", 2);
+-event_method!(on_double_click, "onDoubleClick", 2);
+-event_method!(on_focus, "onFocus", 1);
+-event_method!(on_key_down, "onKeyDown", 3);
+-event_method!(on_key_press, "onKeyPress", 2);
+-event_method!(on_key_up, "onKeyUp", 3);
+-event_method!(on_mouse_down, "onMouseDown", 4);
+-event_method!(on_mouse_enter, "onMouseEnter", 0);
+-event_method!(on_mouse_leave, "onMouseLeave", 0);
+-event_method!(on_mouse_move, "onMouseMove", 3);
+-event_method!(on_mouse_up, "onMouseUp", 4);
+-event_method!(on_mouse_wheel, "onMouseWheel", 4);
+-event_method!(on_multi_touch, "onMultiTouch", 0);
+-event_method!(on_node_disabled, "onNodeDisabled", 0);
+-event_method!(on_node_enabled, "onNodeEnabled", 0);
+-event_method!(on_paint, "onPaint", 0);
+-event_method!(on_search_next_focusable, "onSearchNextFocusable", 1);
+-event_method!(on_search_prev_focusable, "onSearchPrevFocusable", 1);
+-event_method!(on_touch_down, "onTouchDown", 5);
+-event_method!(on_touch_move, "onTouchMove", 5);
+-event_method!(on_touch_rotate, "onTouchRotate", 6);
+-event_method!(on_touch_scaling, "onTouchScaling", 5);
+-event_method!(on_touch_up, "onTouchUp", 5);
+-event_method!(on_transition_completed, "onTransitionCompleted", 2);
++event_method!(
++    on_before_focus,
++    "onBeforeFocus",
++    3,
++    ["layer", "blurred", "direction"]
++);
++event_method!(on_blur, "onBlur", 1, ["focused"]);
++event_method!(on_click, "onClick", 2, ["x", "y"]);
++event_method!(on_double_click, "onDoubleClick", 2, ["x", "y"]);
++event_method!(on_focus, "onFocus", 1, ["blurred", "direction"]);
++event_method!(on_key_down, "onKeyDown", 3, ["key", "shift", "process"]);
++event_method!(on_key_press, "onKeyPress", 2, ["key", "process"]);
++event_method!(on_key_up, "onKeyUp", 3, ["key", "shift", "process"]);
++event_method!(
++    on_mouse_down,
++    "onMouseDown",
++    4,
++    ["x", "y", "button", "shift"]
++);
++event_method!(on_mouse_enter, "onMouseEnter", 0, []);
++event_method!(on_mouse_leave, "onMouseLeave", 0, []);
++event_method!(on_mouse_move, "onMouseMove", 3, ["x", "y", "shift"]);
++event_method!(on_mouse_up, "onMouseUp", 4, ["x", "y", "button", "shift"]);
++event_method!(
++    on_mouse_wheel,
++    "onMouseWheel",
++    4,
++    ["shift", "delta", "x", "y"]
++);
++event_method!(on_multi_touch, "onMultiTouch", 0, []);
++event_method!(on_node_disabled, "onNodeDisabled", 0, []);
++event_method!(on_node_enabled, "onNodeEnabled", 0, []);
++event_method!(on_paint, "onPaint", 0, []);
++event_method!(
++    on_search_next_focusable,
++    "onSearchNextFocusable",
++    1,
++    ["layer"]
++);
++event_method!(
++    on_search_prev_focusable,
++    "onSearchPrevFocusable",
++    1,
++    ["layer"]
++);
++event_method!(
++    on_touch_down,
++    "onTouchDown",
++    5,
++    ["x", "y", "cx", "cy", "id"]
++);
++event_method!(
++    on_touch_move,
++    "onTouchMove",
++    5,
++    ["x", "y", "cx", "cy", "id"]
++);
++event_method!(
++    on_touch_rotate,
++    "onTouchRotate",
++    6,
++    ["startangle", "currentangle", "distance", "cx", "cy", "flag"]
++);
++event_method!(
++    on_touch_scaling,
++    "onTouchScaling",
++    5,
++    ["startdistance", "currentdistance", "cx", "cy", "flag"]
++);
++event_method!(on_touch_up, "onTouchUp", 5, ["x", "y", "cx", "cy", "id"]);
++event_method!(
++    on_transition_completed,
++    "onTransitionCompleted",
++    2,
++    ["dest", "src"]
++);
+ 
+ /// `Layer.onHitTest(x, y, hit)` - set the layer's hit flag.
+ ///
+diff --git a/crates/compat/src/natives/visual/layer/mod.rs b/crates/compat/src/natives/visual/layer/mod.rs
+--- a/crates/compat/src/natives/visual/layer/mod.rs
++++ b/crates/compat/src/natives/visual/layer/mod.rs
+@@ -2,6 +2,7 @@
+ #![allow(unsafe_code)]
+ 
+ use std::ffi::{c_char, c_int, c_void};
++use std::rc::Rc;
+ 
+ use crate::engine_api::InputState;
+ use crate::engine_api::{LayerState, Rect, Scene};
+@@ -249,6 +250,8 @@
+     /// land.
+     attached: bool,
+     font_object: Option<DetachedValue>,
++    /// The constructor owner retained independently while actions re-enter the VM.
++    action_owner: Option<Rc<DetachedValue>>,
+     /// Reference `tTJSNI_BaseLayer::CursorX_Work` (`LayerIntf.cpp:347`): the
+     /// pending X `SetCursorX` stores for the next `SetCursorY`.
+     cursor_x_work: i32,
+@@ -367,15 +370,17 @@
+     if instance.is_null() {
+         return;
+     }
+-    // SAFETY: `layer_create` allocated the payload and the VM keeps it
+-    // alive for the duration of the callback.
+-    let inst = unsafe { &mut *(instance as *mut LayerInst) };
+-    let Some(id) = inst.id else {
++    let (id, font, action_owner) = {
++        // SAFETY: the VM keeps this payload alive for the invalidate callback.
++        let inst = unsafe { &mut *(instance as *mut LayerInst) };
++        (inst.id, inst.font_object.take(), inst.action_owner.take())
++    };
++    // Retained object drops may re-enter the VM; no payload borrow remains.
++    drop(font);
++    drop(action_owner);
++    let Some(id) = id else {
+         return;
+     };
+-    // An invalidated layer can no longer hand out its cached `Font` object,
+-    // so release it now rather than when the script object drops.
+-    drop(inst.font_object.take());
+     let Ok((_resolved, ctx)) = bound(engine) else {
+         return;
+     };
+@@ -447,8 +452,13 @@
+         if let Ok(Some(payload)) = host.native_instance_payload(object.raw_id(), "Layer") {
+             // SAFETY: `native_instance_payload("Layer")` only returns Layer
+             // payloads, and `object` keeps the payload alive for this call.
+-            let inst = unsafe { &mut *(payload.as_ptr() as *mut LayerInst) };
+-            drop(inst.font_object.take());
++            let (font, action_owner) = {
++                // SAFETY: the retained object keeps this Layer payload alive.
++                let inst = unsafe { &mut *(payload.as_ptr() as *mut LayerInst) };
++                (inst.font_object.take(), inst.action_owner.take())
++            };
++            drop(font);
++            drop(action_owner);
+         }
+         crate::natives::plugins::layer_ex::forget_layer(ctx, id);
+         // The script object keeps its remaining members and is finalized when
+@@ -506,8 +516,8 @@
+     // SAFETY: the C++ trampoline passes `argc` valid `Value`s in `argv` for the duration of this callback.
+     let a = unsafe { args(argv, argc) };
+     // SAFETY: `instance` is the live `LayerInst` payload the VM allocated for this script object; `layer_ctor` is its only live accessor.
+-    let inst = unsafe { &mut *(instance as *mut LayerInst) };
+-    if inst.attached {
++    let attached = unsafe { &*(instance as *const LayerInst) }.attached;
++    if attached {
+         return report_error(out_error, "Layer: this layer is already constructed");
+     }
+     // Window: explicit object/id, else the scene's first window.
+@@ -537,10 +547,19 @@
+         Some(value) if value.ty == VAL_INTEGER && value.integer >= 0 => Some(value.integer as u32),
+         _ => None,
+     };
++    let action_owner = match a.first() {
++        Some(value) if value.ty == VAL_OBJECT => match resolved.engine().retain_object_arg(value) {
++            Ok(owner) => Some(Rc::new(owner)),
++            Err(error) => return report_error(out_error, &error),
++        },
++        _ => None,
++    };
+     let scene = match scene_mut(&ctx) {
+         Ok(scene) => scene,
+         Err(error) => return report_error(out_error, &error),
+     };
++    // SAFETY: object lookups and retentions finished before borrowing the payload.
++    let inst = unsafe { &mut *(instance as *mut LayerInst) };
+     let window = match window {
+         Some(id) if scene.window(id as u32).is_some() => id as u32,
+         _ => match scene.presentation_window() {
+@@ -586,6 +605,7 @@
+         }
+         inst.type_value = blend::LT_OPAQUE;
+     }
++    inst.action_owner = action_owner;
+     inst.attached = true;
+     log::trace!("Layer created: id={id} parent={parent:?}");
+     register_layer(&ctx, id, objthis);
+diff --git a/crates/compat/tests/layer_action_owner.rs b/crates/compat/tests/layer_action_owner.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/compat/tests/layer_action_owner.rs
+@@ -0,0 +1,187 @@
++//! Layer default events dispatch to their constructor's action owner.
++//! reference/cpp/core/visual/LayerIntf.cpp:476,9970-10472
++
++mod common;
++
++use std::cell::Cell;
++use std::rc::Rc;
++
++use common::{Env, vm_lock};
++use compat::CompatError;
++use platform::{InputEvent, MouseButton, PlatformEvent};
++
++#[test]
++fn native_click_preserves_target_and_named_argument_types() {
++    let _lock = vm_lock();
++    let env = Env::new();
++    env.run(
++        r#"
++        var owner=new Window(); var button=new Layer(owner,null);
++        var count=0; var target=false; var x=0; var y=''; var kind='';
++        owner.action=function(ev) {
++            count++; target=ev.target===button; kind=ev.type; x=ev.x; y=ev.y;
++        };
++        button.onClick(3.5,'seven');
++        "#,
++    );
++    // LayerIntf.cpp:9976-9980: the target is the layer, not its window.
++    assert_eq!(env.eval_int("count"), 1);
++    assert_eq!(
++        env.eval_int("target && kind==='onClick' && x===3.5 && y==='seven'"),
++        1
++    );
++}
++
++#[test]
++fn script_override_forwards_only_when_it_calls_super() {
++    let _lock = vm_lock();
++    let env = Env::new();
++    env.run(
++        r#"
++        class Button extends Layer {
++            function Button(win,parent) { super.Layer(win,parent); }
++            function onClick(x,y) { super.onClick(x,y); }
++        }
++        var owner=new Window(); var button=new Button(owner,null); var count=0;
++        owner.action=function(ev) { if(ev.type==='onClick' && ev.target===button) count++; };
++        button.onClick(1,2);
++        var forwarded=count;
++        button.onClick=function(x,y) {};
++        button.onClick(1,2);
++        "#,
++    );
++    assert_eq!(env.eval_int("forwarded"), 1);
++    assert_eq!(env.eval_int("count"), 1);
++}
++
++#[test]
++fn event_dictionary_copies_object_and_zero_argument_events() {
++    let _lock = vm_lock();
++    let env = Env::new();
++    env.run(
++        r#"
++        var owner=new Window(); var first=new Layer(owner,null); var second=new Layer(owner,first);
++        var blurred=false; var direction=false; var paint=0; var process=false;
++        owner.action=function(ev) {
++            if(ev.type==='onFocus') { blurred=ev.blurred===second; direction=ev.direction===1; }
++            if(ev.type==='onPaint' && ev.target===first) paint++;
++            if(ev.type==='onKeyDown') process=ev.key===13 && ev.shift===0 && ev.process===1;
++        };
++        first.onFocus(second,1); first.onPaint(); first.onKeyDown(13,0,1);
++        "#,
++    );
++    assert_eq!(env.eval_int("blurred && direction && process"), 1);
++    assert_eq!(env.eval_int("paint"), 1);
++}
++
++#[test]
++fn action_callback_error_is_returned_to_the_native_caller() {
++    let _lock = vm_lock();
++    let env = Env::new();
++    env.run("var owner=new Window(); var button=new Layer(owner,null); owner.action=function(ev) { throw %[message: 'action failed']; };");
++    // tjsInterCodeExec.cpp:827-852 extracts the message from exception objects.
++    let error = env.error("button.onClick(1,2)");
++    assert!(error.contains("action failed"), "callback error: {error:?}");
++}
++
++#[test]
++fn subclass_button_click_can_close_a_modal_without_a_fabricated_result() {
++    let _lock = vm_lock();
++    let env = Rc::new(Env::new());
++    env.run(
++        r#"
++        class Button extends Layer {
++            function Button(win,parent) { super.Layer(win,parent); visible=true; hitThreshold=0; }
++            function onClick(x,y) { super.onClick(x,y); }
++        }
++        class Dialog extends Window {
++            var button; var result=false; var clicks=0;
++            function Dialog() { super.Window(); setInnerSize(160,80); button=new Button(this,null); button.setSize(160,80); }
++            function action(ev) { if(ev.type==='onClick' && ev.target===button) { clicks++; result=true; close(); } }
++        }
++        var main=new Window(); var dialog=new global.Dialog();
++        "#,
++    );
++    let weak = Rc::downgrade(&env);
++    let observed = Rc::new(Cell::new(None));
++    let captured = Rc::clone(&observed);
++    env.modal_driver(Some(Rc::new(move |id| {
++        let env = weak
++            .upgrade()
++            .ok_or_else(|| CompatError::Engine("test host expired".into()))?;
++        let mut ctx = env.compat_context();
++        let mut adapter = compat::EventAdapter::with_dispatch_budget(std::time::Duration::MAX);
++        adapter.begin_input_frame(&mut ctx);
++        adapter.dispatch_frame(
++            &mut ctx,
++            &[
++                PlatformEvent::Input(InputEvent::PointerMoved { x: 10.0, y: 10.0 }),
++                PlatformEvent::Input(InputEvent::MouseButton {
++                    button: MouseButton::Left,
++                    pressed: true,
++                }),
++                PlatformEvent::Input(InputEvent::MouseButton {
++                    button: MouseButton::Left,
++                    pressed: false,
++                }),
++            ],
++        )?;
++        adapter.end_input_frame(&mut ctx);
++        captured.set(Some(compat::modal_active(&ctx, id)));
++        if compat::modal_active(&ctx, id) {
++            return Err(CompatError::Engine(
++                "button action did not close modal".into(),
++            ));
++        }
++        Ok(())
++    })));
++    env.run("dialog.showModal(); var accepted=dialog.result; var count=dialog.clicks;");
++    assert_eq!(observed.get(), Some(false));
++    assert_eq!(env.eval_int("accepted"), 1);
++    assert_eq!(env.eval_int("count"), 1);
++}
++
++#[test]
++fn action_can_reenter_the_layer_and_invalidate_its_owner() {
++    let _lock = vm_lock();
++    let env = Env::new();
++    env.run(
++        r#"
++        var owner=new Window(); var button=new Layer(owner,null); owner.add(button);
++        var clicks=0; var paints=0;
++        owner.action=function(ev) {
++            if(ev.type==='onClick') { clicks++; button.onPaint(); invalidate owner; }
++            if(ev.type==='onPaint') paints++;
++        };
++        button.onClick(1,2);
++        "#,
++    );
++    assert_eq!(env.eval_int("clicks"), 1);
++    assert_eq!(env.eval_int("paints"), 1);
++    assert_eq!(env.eval_int("isvalid owner"), 0);
++    assert_eq!(env.eval_int("isvalid button"), 0);
++}
++
++#[test]
++fn null_focus_targets_remain_null_in_action_events() {
++    let _lock = vm_lock();
++    let env = Env::new();
++    env.run(
++        r#"
++        var owner=new Window(); var button=new Layer(owner,null);
++        var focus=0; var blur=0; var before=0;
++        owner.action=function(ev) {
++            if(ev.type==='onFocus' && ev.target===button && ev.blurred===null && ev.direction===1) focus++;
++            if(ev.type==='onBlur' && ev.target===button && ev.focused===null) blur++;
++            if(ev.type==='onBeforeFocus' && ev.target===button && ev.layer===null && ev.blurred===null && ev.direction===0) before++;
++        };
++        button.onFocus(null,1);
++        button.onBlur(null);
++        button.onBeforeFocus(null,null,0);
++        "#,
++    );
++    // LayerIntf.cpp:10209-10216,10226-10234,10412-10420 copy the null variants.
++    assert_eq!(env.eval_int("focus"), 1);
++    assert_eq!(env.eval_int("blur"), 1);
++    assert_eq!(env.eval_int("before"), 1);
++}
+diff --git a/scripts/allowlists/house_style_baseline.txt b/scripts/allowlists/house_style_baseline.txt
+--- a/scripts/allowlists/house_style_baseline.txt
++++ b/scripts/allowlists/house_style_baseline.txt
+@@ -2727,17 +2727,6 @@
+ {"path": "crates/compat/src/natives/visual/layer/blend.rs", "rule": "reference-citation", "anchor": "//! integer numbering scripts read and write as `layer.type` is TVP vocabulary", "reason": "legacy comment, cleanup tracked in TODO §15"}
+ {"path": "crates/compat/src/natives/visual/layer/blend.rs", "rule": "reference-citation", "anchor": "/// `ltPsColorDodge5` — the legacy KiriKiri approximation.", "reason": "legacy comment, cleanup tracked in TODO §15"}
+ {"path": "crates/compat/src/natives/visual/layer/blend.rs", "rule": "reference-citation", "anchor": "/// `ltPsDifference5` — the legacy KiriKiri approximation.", "reason": "legacy comment, cleanup tracked in TODO §15"}
+-{"path": "crates/compat/src/natives/visual/layer/events.rs", "rule": "reference-citation", "anchor": "// The argument counts are the reference `TVP_ACTION_INVOKE_BEGIN(n, …)`", "reason": "legacy comment, cleanup tracked in TODO §15"}
+-{"path": "crates/compat/src/natives/visual/layer/events.rs", "rule": "reference-citation", "anchor": "// literals (`reference/cpp/core/visual/LayerIntf.cpp:9944-10472`); each is", "reason": "legacy comment, cleanup tracked in TODO §15"}
+-{"path": "crates/compat/src/natives/visual/layer/events.rs", "rule": "reference-citation", "anchor": "// paired with the member the reference registers at the same site.", "reason": "legacy comment, cleanup tracked in TODO §15"}
+-{"path": "crates/compat/src/natives/visual/layer/events.rs", "rule": "reference-citation", "anchor": "//! (`reference/cpp/core/base/EventIntf.h:208-211`), whose first statement is", "reason": "legacy comment, cleanup tracked in TODO §15"}
+-{"path": "crates/compat/src/natives/visual/layer/events.rs", "rule": "reference-citation", "anchor": "//! (`reference/cpp/core/visual/LayerIntf.cpp:9970-9984`), and a normally", "reason": "legacy comment, cleanup tracked in TODO §15"}
+-{"path": "crates/compat/src/natives/visual/layer/events.rs", "rule": "reference-citation", "anchor": "//! Argument counts follow the reference exactly: every handler builds its", "reason": "legacy comment, cleanup tracked in TODO §15"}
+-{"path": "crates/compat/src/natives/visual/layer/events.rs", "rule": "reference-citation", "anchor": "//! The reference declares these as native methods", "reason": "legacy comment, cleanup tracked in TODO §15"}
+-{"path": "crates/compat/src/natives/visual/layer/events.rs", "rule": "reference-citation", "anchor": "//! `ActionOwner = param[0]` (`LayerIntf.cpp:476`), i.e. the window object", "reason": "legacy comment, cleanup tracked in TODO §15"}
+-{"path": "crates/compat/src/natives/visual/layer/events.rs", "rule": "reference-citation", "anchor": "//! constructed layer always has one: the reference constructor stores", "reason": "legacy comment, cleanup tracked in TODO §15"}
+-{"path": "crates/compat/src/natives/visual/layer/events.rs", "rule": "reference-citation", "anchor": "//! whose check is unconditional (`LayerIntf.cpp:9960-9961`). Handlers with", "reason": "legacy comment, cleanup tracked in TODO §15"}
+-{"path": "crates/compat/src/natives/visual/layer/events.rs", "rule": "reference-citation", "anchor": "/// Define one event handler method with its reference `TVP_ACTION_INVOKE_BEGIN`", "reason": "legacy comment, cleanup tracked in TODO §15"}
+ {"path": "crates/compat/src/natives/visual/layer/focus.rs", "rule": "reference-citation", "anchor": "// (`LayerManager.cpp:698-700`).", "reason": "legacy comment, cleanup tracked in TODO §15"}
+ {"path": "crates/compat/src/natives/visual/layer/focus.rs", "rule": "reference-citation", "anchor": "// (`LayerManager.cpp:704-708`).", "reason": "legacy comment, cleanup tracked in TODO §15"}
+ {"path": "crates/compat/src/natives/visual/layer/focus.rs", "rule": "reference-citation", "anchor": "// (`LayerManager.cpp:766-767`).", "reason": "legacy comment, cleanup tracked in TODO §15"}

@@ -1,0 +1,37 @@
+diff --git a/cpp/core/visual/ogl/krkr_egl_context.cpp b/cpp/core/visual/ogl/krkr_egl_context.cpp
+index b3f8d4c..5cecc22 100644
+--- a/cpp/core/visual/ogl/krkr_egl_context.cpp
++++ b/cpp/core/visual/ogl/krkr_egl_context.cpp
+@@ -34,6 +34,11 @@
+ #define EGL_LOGE(...) ((void)0)
+ #endif // __ANDROID__
+ 
++#if defined(__linux__) && !defined(__ANDROID__)
++#include <EGL/eglext.h>
++#include <EGL/eglext_angle.h>
++#endif
++
+ namespace krkr {
+ 
+ // ---------------------------------------------------------------------------
+@@ -49,7 +54,19 @@ EGLContextManager::~EGLContextManager() {
+ // ---------------------------------------------------------------------------
+ 
+ EGLDisplay EGLContextManager::AcquireAngleDisplay(AngleBackend& backend) {
+-#if defined(__ANDROID__)
++#if defined(__linux__) && !defined(__ANDROID__)
++    // The pinned Linux ANGLE port only builds desktop GL, not Vulkan.
++    if (backend == AngleBackend::Vulkan) return EGL_NO_DISPLAY;
++    auto getDisplay = reinterpret_cast<PFNEGLGETPLATFORMDISPLAYEXTPROC>(
++        eglGetProcAddress("eglGetPlatformDisplayEXT"));
++    const EGLint attributes[] = {
++        EGL_PLATFORM_ANGLE_TYPE_ANGLE, EGL_PLATFORM_ANGLE_TYPE_OPENGL_ANGLE,
++        EGL_PLATFORM_ANGLE_NATIVE_PLATFORM_TYPE_ANGLE, EGL_PLATFORM_SURFACELESS_MESA,
++        EGL_NONE
++    };
++    return getDisplay ? getDisplay(EGL_PLATFORM_ANGLE_ANGLE, EGL_DEFAULT_DISPLAY, attributes)
++                      : EGL_NO_DISPLAY;
++#elif defined(__ANDROID__)
+     EGLint angleType = (backend == AngleBackend::Vulkan)
+         ? EGL_PLATFORM_ANGLE_TYPE_VULKAN_ANGLE
+         : EGL_PLATFORM_ANGLE_TYPE_OPENGLES_ANGLE;

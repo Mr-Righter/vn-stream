@@ -1,0 +1,14 @@
+[package]
+name = "vn-tlg-preview"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+libtlg-rs = "=0.2.4"
+png = "=0.17.16"
+libc = "=0.2.177"
+
+[profile.release]
+panic = "abort"
+strip = true

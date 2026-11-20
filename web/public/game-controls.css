@@ -1,0 +1,195 @@
+/* Only the owned overlay is styled; Selkies media and input retain their styles. */
+#vn-game-controls {
+  position: fixed;
+  left: var(--player-left, 0px);
+  top: var(--player-top, 0px);
+  width: var(--player-width, 100vw);
+  height: var(--player-height, 100dvh);
+  z-index: 100000;
+  pointer-events: none;
+}
+#vn-game-controls .vn-player-app {
+  min-height: 0;
+  height: 100%;
+  background: transparent;
+  font-family: var(--vn-font);
+  font-size: var(--vn-font-compact);
+  line-height: 1.5;
+}
+#vn-game-controls [hidden] {
+  display: none !important;
+}
+#game-settings-toggle {
+  position: absolute;
+  left: max(12px, env(safe-area-inset-left));
+  top: max(12px, env(safe-area-inset-top));
+  width: 44px;
+  height: 44px;
+  pointer-events: auto;
+}
+#vn-game-controls .ant-dropdown {
+  pointer-events: auto;
+}
+#vn-game-controls .vn-player-menu {
+  width: 224px;
+  padding: 8px;
+  border: 1px solid var(--vn-line);
+  border-radius: var(--vn-radius);
+  background: var(--vn-surface);
+  color: var(--vn-text);
+  box-shadow: var(--vn-shadow);
+}
+.shortcut-switch {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px;
+  border-bottom: 1px solid var(--vn-line);
+  min-height: 44px;
+}
+#vn-game-controls .quit-game {
+  width: 100%;
+  justify-content: flex-start;
+  height: 44px;
+  margin-top: 4px;
+}
+#game-shortcuts {
+  position: absolute;
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 0;
+  left: max(10px, env(safe-area-inset-left));
+  right: max(10px, env(safe-area-inset-right));
+  bottom: max(8px, env(safe-area-inset-bottom));
+  width: max-content;
+  max-width: calc(100% - 20px);
+  margin: auto;
+  padding: 0 4px;
+  border: 1px solid var(--vn-line);
+  border-radius: var(--vn-radius);
+  background: color-mix(in srgb, var(--vn-surface) 92%, transparent);
+  backdrop-filter: blur(16px);
+}
+#game-shortcuts .ant-btn {
+  height: auto;
+  min-height: 44px;
+  min-width: 44px;
+  padding: 2px 8px;
+  gap: 4px;
+  font-size: var(--vn-font-compact);
+}
+#game-shortcuts .ant-btn[aria-pressed='true'] {
+  color: var(--vn-link);
+  background: var(--vn-hover);
+}
+#vn-game-controls svg {
+  flex-shrink: 0;
+}
+#vn-game-controls .ant-btn:focus-visible {
+  outline: 2px solid var(--vn-focus);
+  outline-offset: 2px;
+}
+body:has(#vn-game-controls) [data-virtual-keyboard-button] {
+  display: none !important;
+}
+.vn-player-statuses {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  top: 72px;
+  max-width: 560px;
+  margin: auto;
+  display: grid;
+  gap: 8px;
+}
+.game-control-notice {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: calc(120px + env(safe-area-inset-bottom));
+  max-width: 480px;
+  margin: auto;
+}
+@media (max-width: 600px) {
+  #game-shortcuts {
+    display: grid;
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    width: calc(100% - 20px);
+    max-width: 360px;
+  }
+  #game-shortcuts .ant-btn {
+    flex-direction: column;
+    padding: 2px 0;
+    gap: 1px;
+    font-size: var(--vn-font-compact);
+    line-height: 1.5;
+    white-space: normal;
+  }
+  #game-shortcuts .ant-btn span {
+    overflow-wrap: anywhere;
+  }
+}
+@media (max-width: 359px) {
+  #game-shortcuts {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+  #game-shortcuts .ant-btn:last-child {
+    grid-column: 4;
+  }
+}
+
+/* Keep the original IME receiver focusable; no visible editor or scroll target. */
+#keyboard-input-assist.game-keyboard-receiver {
+  position: fixed !important;
+  left: calc(var(--player-left, 0px) + 2px) !important;
+  top: calc(var(--player-top, 0px) + env(safe-area-inset-top, 0px) + 2px) !important;
+  width: 1px !important;
+  height: 1px !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  max-width: 1px !important;
+  max-height: 1px !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  border: 0 !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+  caret-color: transparent !important;
+  background: transparent !important;
+  font: 16px system-ui !important;
+  display: block !important;
+  visibility: visible !important;
+}
+/* Video and input must keep the same visualViewport rectangle as the controls. */
+.video-container {
+  position: fixed !important;
+  left: var(--player-left, 0px) !important;
+  top: var(--player-top, 0px) !important;
+  width: var(--player-width, 100vw) !important;
+  height: var(--player-height, 100dvh) !important;
+}
+
+#vn-game-controls :is(.vn-player-menu, .game-control-notice) {
+  animation: vn-player-enter var(--vn-motion-mid) var(--vn-ease-enter);
+}
+@keyframes vn-player-enter {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+#vn-game-controls .ant-dropdown.ant-slide-up-leave {
+  animation-duration: var(--vn-motion-fast);
+}
+@media (prefers-reduced-motion: reduce) {
+  #vn-game-controls *,
+  #vn-game-controls *::before,
+  #vn-game-controls *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}

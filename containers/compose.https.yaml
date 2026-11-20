@@ -1,0 +1,13 @@
+services:
+  vn-stream:
+    environment:
+      VN_STREAM_ENABLE_HTTPS: "true"
+    ports:
+      - "${VN_STREAM_HTTPS_BIND:?Set VN_STREAM_HTTPS_BIND to the host LAN IP}:${VN_STREAM_HTTPS_PORT:-8443}:3001"
+    volumes:
+      - type: bind
+        source: "${VN_STREAM_HTTPS_DIRECTORY:?Set VN_STREAM_HTTPS_DIRECTORY to the server certificate directory}"
+        target: /etc/vn-stream/tls
+        read_only: true
+        bind:
+          create_host_path: false

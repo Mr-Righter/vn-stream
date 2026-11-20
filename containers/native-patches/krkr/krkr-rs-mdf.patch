@@ -1,0 +1,161 @@
+diff --git a/crates/platform/media/psd/src/decompress.rs b/crates/platform/media/psd/src/decompress.rs
+index 2781262..3a20cc9 100644
+--- a/crates/platform/media/psd/src/decompress.rs
++++ b/crates/platform/media/psd/src/decompress.rs
+@@ -4,8 +4,8 @@
+ //!
+ //! * a raw Emote **LZ4 frame** (`04 22 4D 18 ...`) whose blocks are either
+ //!   stored uncompressed or compressed with the raw LZ4 block algorithm;
+-//! * an **MDF** archive (`MDF\0` magic) whose payload after the first eight
+-//!   bytes is a zlib stream;
++//! * an **MDF** archive (exact `MDF` or `mdf` prefix) whose payload after the
++//!   first eight bytes is a zlib stream;
+ //! * anything else, which is treated as a plain PSB byte stream.
+ //!
+ //! The frame *looks* like the standard LZ4 frame format, but the header, block
+@@ -21,13 +21,13 @@ use crate::error::{PsbError, PsbResult};
+
+ /// The Emote LZ4 frame magic.
+ const LZ4_MAGIC: [u8; 4] = [0x04, 0x22, 0x4d, 0x18];
+-/// The MDF archive magic.
++/// The uppercase MDF archive magic.
+ const MDF_MAGIC: &[u8; 3] = b"MDF";
+
+ /// Decompress (or pass through) an on-disk PSB/MDF stream.
+ ///
+-/// Short streams and unknown magics are errors, the LZ4 and MDF containers are
+-/// inflated, and every other byte sequence is returned unchanged.
++/// Streams shorter than nine bytes are errors. LZ4 frames and archives with an
++/// exact `MDF` or `mdf` prefix are inflated; other streams are returned unchanged.
+ pub(crate) fn open_decompressed_stream(input: &[u8]) -> PsbResult<Vec<u8>> {
+     if input.len() < 9 {
+         return Err(PsbError::Truncated("stream header"));
+@@ -35,7 +35,7 @@ pub(crate) fn open_decompressed_stream(input: &[u8]) -> PsbResult<Vec<u8>> {
+     if input[..4] == LZ4_MAGIC {
+         return decompress_lz4_stream(input);
+     }
+-    if &input[..3] == MDF_MAGIC {
++    if &input[..3] == MDF_MAGIC || &input[..3] == b"mdf" {
+         return decompress_mdf_stream(input);
+     }
+     Ok(input.to_vec())
+@@ -43,7 +43,7 @@ pub(crate) fn open_decompressed_stream(input: &[u8]) -> PsbResult<Vec<u8>> {
+
+ /// Inflate the zlib payload of an MDF archive.
+ fn decompress_mdf_stream(input: &[u8]) -> PsbResult<Vec<u8>> {
+-    // Bytes 0..4 are the `MDF\0` magic, 4..8 the uncompressed length.
++    // Bytes 4..8 hold the uncompressed length; zlib data starts at byte 8.
+     let uncompressed_size = u32::from_le_bytes([input[4], input[5], input[6], input[7]]);
+     let mut decoder = flate2::read::ZlibDecoder::new(&input[8..]);
+     let mut output = Vec::with_capacity(uncompressed_size as usize);
+@@ -326,8 +326,8 @@ mod tests {
+         ));
+     }
+
+-    /// `MDF` streams carry a zlib payload after the magic and the declared
+-    /// length (`reference/cpp/plugins/psbfile/PSBStreamDecompress.cpp:53`).
++    /// `MDF` and `mdf` streams inflate the same zlib payload after the magic
++    /// and length (`reference/cpp/plugins/psbfile/PSBStreamDecompress.cpp:54-58`).
+     #[test]
+     fn mdf_stream_inflates() {
+         use flate2::Compression;
+@@ -343,7 +343,10 @@ mod tests {
+         input.extend_from_slice(b"MDF\0");
+         input.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+         input.extend_from_slice(&compressed);
+-        assert_eq!(open_decompressed_stream(&input).unwrap(), payload);
++        for magic in [b"MDF", b"mdf"] {
++            input[..3].copy_from_slice(magic);
++            assert_eq!(open_decompressed_stream(&input).unwrap(), payload);
++        }
+     }
+
+     /// A stored block is marked by the high bit of its length
+diff --git a/crates/platform/media/psd/tests/streams.rs b/crates/platform/media/psd/tests/streams.rs
+new file mode 100644
+index 0000000..bbe3ad8
+--- /dev/null
++++ b/crates/platform/media/psd/tests/streams.rs
+@@ -0,0 +1,82 @@
++//! MDF stream recognition through the public PSB parser.
++
++use std::io::Write;
++
++use flate2::Compression;
++use flate2::write::ZlibEncoder;
++use psd::container::{self, PsbValue};
++use psd::error::PsbError;
++
++/// Both spellings inflate before the PSB document is parsed
++/// (`reference/cpp/plugins/psbfile/PSBStreamDecompress.cpp:54-58`).
++#[test]
++fn mdf_spellings_parse() {
++    let payload = empty_psb();
++    for magic in [b"MDF", b"mdf"] {
++        let input = mdf_stream(magic, &payload);
++        let document = container::parse_stream(&input, 0).expect("the MDF document parses");
++        assert_eq!(document.root, PsbValue::Dictionary(Vec::new()));
++        assert!(document.resources.is_empty());
++    }
++}
++
++/// Invalid zlib data in a lowercase wrapper fails during decompression
++/// (`reference/cpp/plugins/psbfile/PSBStreamDecompress.cpp:22-25,54-58`).
++#[test]
++fn lowercase_mdf_rejects_corruption() {
++    let mut input = Vec::from(*b"mdf\0");
++    input.extend_from_slice(&1u32.to_le_bytes());
++    input.extend_from_slice(&[0; 8]);
++    assert!(matches!(
++        container::parse_stream(&input, 0),
++        Err(PsbError::Decompress(_))
++    ));
++}
++
++/// Mixed spellings pass through unchanged, so the PSB parser rejects their
++/// signature (`reference/cpp/plugins/psbfile/PSBStreamDecompress.cpp:54-66`).
++#[test]
++fn mixed_case_mdf_stays_unknown() {
++    let payload = empty_psb();
++    for magic in [b"MDf", b"MdF", b"Mdf", b"mDF", b"mDf", b"mdF"] {
++        let input = mdf_stream(magic, &payload);
++        assert!(matches!(
++            container::parse_stream(&input, 0),
++            Err(PsbError::BadSignature(signature)) if signature[..3] == magic[..]
++        ));
++    }
++}
++
++fn mdf_stream(magic: &[u8; 3], payload: &[u8]) -> Vec<u8> {
++    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
++    encoder.write_all(payload).expect("encode fixture");
++    let compressed = encoder.finish().expect("finish fixture");
++    let mut input = Vec::from(*magic);
++    input.push(0);
++    input.extend_from_slice(
++        &u32::try_from(payload.len())
++            .expect("fixture size")
++            .to_le_bytes(),
++    );
++    input.extend_from_slice(&compressed);
++    input
++}
++
++/// Version 2 with empty name/string/chunk tables and an empty root dictionary
++/// (`reference/cpp/plugins/psbfile/PSBHeader.h:54-85`,
++/// `reference/cpp/plugins/psbfile/PSBFile.cpp:484-526`).
++fn empty_psb() -> Vec<u8> {
++    let mut data = Vec::from(*b"PSB\0");
++    data.extend_from_slice(&2u16.to_le_bytes());
++    data.extend_from_slice(&0u16.to_le_bytes());
++    for offset in [40u32, 40, 49, 52, 52, 55, 58, 58] {
++        data.extend_from_slice(&offset.to_le_bytes());
++    }
++    // Six empty arrays: three name tables, strings, chunk offsets and lengths.
++    for _ in 0..6 {
++        data.extend_from_slice(&[0x0d, 0, 0x0d]);
++    }
++    // A dictionary with empty name-index and value-offset arrays.
++    data.extend_from_slice(&[0x21, 0x0d, 0, 0x0d, 0x0d, 0, 0x0d]);
++    data
++}
